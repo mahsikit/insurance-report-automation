@@ -1,5 +1,6 @@
 import os
 import requests
+from concurrent.futures import ThreadPoolExecutor
 
 CR_FILENAME = "claim_ratio_CR.csv"
 QUERY_FILENAME = "query_result_Query_result.csv"
@@ -203,23 +204,28 @@ def fetch_from_metabase(convert_folder, use_benefit=False, report_period="Mei 20
         active_policy_nos = _fetch_active_policy_nos(base_url, session_headers, active_policy_card_id)
         print(f"   ✅ {len(active_policy_nos)} active policies\n")
 
-    # 1. Fetch CR (saved question, filtered by As_Of + active policy list)
+    # 1+2. Fetch CR and claim/benefit data in parallel (both depend on active_policy_nos)
     policy_count_label = f", {len(active_policy_nos)} policies" if active_policy_nos else ""
-    print(f"📥 Fetching Claim Ratio/CR (card {cr_card_id}, As_Of={as_of}{policy_count_label})...")
-    csv_text = _fetch_cr_csv(base_url, session_headers, cr_card_id, as_of, policy_nos=active_policy_nos)
-    with open(os.path.join(convert_folder, CR_FILENAME), "w", encoding="utf-8") as f:
-        f.write(csv_text)
-    print(f"   ✅ Saved {CR_FILENAME} ({csv_text.count(chr(10))} lines)\n")
+    print(f"📥 Fetching CR (card {cr_card_id}, As_Of={as_of}{policy_count_label}) "
+          f"+ {query_label} (dashboard {query_dashboard_id}) in parallel...")
 
-    # 2. Fetch claim/benefit data (dashboard, with claim_date + optional policy_no filter)
-    print(f"📥 Fetching {query_label} (dashboard {query_dashboard_id}, {claim_before}"
-          + (f", {len(active_policy_nos)} policies" if active_policy_nos else "") + ")...")
-    csv_text = _fetch_dashboard_csv(
-        base_url, session_headers, query_dashboard_id, claim_before,
-        policy_nos=active_policy_nos,
-    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_cr = executor.submit(
+            _fetch_cr_csv, base_url, session_headers, cr_card_id, as_of, active_policy_nos
+        )
+        future_dashboard = executor.submit(
+            _fetch_dashboard_csv, base_url, session_headers, query_dashboard_id,
+            claim_before, active_policy_nos
+        )
+        cr_csv = future_cr.result()
+        dashboard_csv = future_dashboard.result()
+
+    with open(os.path.join(convert_folder, CR_FILENAME), "w", encoding="utf-8") as f:
+        f.write(cr_csv)
+    print(f"   ✅ {CR_FILENAME} ({cr_csv.count(chr(10))} lines)")
+
     with open(os.path.join(convert_folder, QUERY_FILENAME), "w", encoding="utf-8") as f:
-        f.write(csv_text)
-    print(f"   ✅ Saved {QUERY_FILENAME} ({csv_text.count(chr(10))} lines)\n")
+        f.write(dashboard_csv)
+    print(f"   ✅ {QUERY_FILENAME} ({dashboard_csv.count(chr(10))} lines)\n")
 
     print("🎯 FETCH SELESAI\n")

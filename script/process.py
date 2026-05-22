@@ -2,9 +2,8 @@ import os
 import pandas as pd
 import re
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 🔥 SET MANUAL REPORT PERIOD DI SINI
-REPORT_PERIOD = "Mei 2026"
 
 CR_NUMERIC = [
     "gross_written_premium_before_disc", "gross_earned_premium_before_disc",
@@ -38,22 +37,37 @@ def _detect_files(convert_folder):
 
 
 def broker_folder(source_name):
-    """Derive a short broker directory name from source_name.
+    """Use the full source_name as the broker subfolder, sanitized for the filesystem.
 
-    'PT ANDIKA MITRA SEJATI (EB HEALTH)' → 'ANDIKA'
-    Add an explicit mapping dict here if multiple brokers need custom names.
+    'PT ANDIKA MITRA SEJATI (EB HEALTH)' → 'PT ANDIKA MITRA SEJATI (EB HEALTH)'
     """
     if not source_name or str(source_name).strip() in ("", "nan"):
         return "UNKNOWN"
     name = str(source_name).strip()
-    if name.upper().startswith("PT "):
-        name = name[3:].strip()
-    name = re.sub(r'\s*\(.*?\)\s*$', '', name).strip()
-    token = name.split()[0] if name else "UNKNOWN"
-    return token.upper()
+    # Remove characters that are invalid in directory names on most OSes
+    name = re.sub(r'[\\/:*?"<>|]', '', name)
+    return name
 
 
-def process_join(convert_folder, output_folder, use_benefit=False):
+def _write_policy(policy, df_cr_filtered, df_data_filtered, output_folder, data_sheet, report_period):
+    company_name = str(df_cr_filtered.iloc[0]['company_name'])
+    source_name = df_data_filtered.iloc[0].get('source_name', '')
+    broker = broker_folder(source_name)
+
+    safe_company = re.sub(r'[\\/:*?"<>|]', '', company_name).strip()
+
+    policy_dir = os.path.join(output_folder, broker, safe_company, policy, report_period)
+    os.makedirs(policy_dir, exist_ok=True)
+
+    output_file = f"Report Claim - {report_period} - {safe_company}_{policy}.xlsx"
+    output_path = os.path.join(policy_dir, output_file)
+
+    with pd.ExcelWriter(output_path, engine='xlsxwriter') as writer:
+        df_cr_filtered.to_excel(writer, sheet_name="CR", index=False)
+        df_data_filtered.to_excel(writer, sheet_name=data_sheet, index=False)
+
+
+def process_join(convert_folder, output_folder, use_benefit=False, report_period="Mei 2026"):
     mode_label = "BENEFIT LEVEL" if use_benefit else "CLAIM LEVEL"
     print(f"🚀 START PROCESSING CSV (PER POLICY) — {mode_label}\n")
 
@@ -77,48 +91,46 @@ def process_join(convert_folder, output_folder, use_benefit=False):
 
     policies = df_cr['policy_no'].dropna().unique()
     grouped_data = df_data.groupby('policy_no')
+    data_sheet = "Benefit" if use_benefit else "Query_result"
 
     os.makedirs(output_folder, exist_ok=True)
 
-    total = len(policies)
-    success = 0
+    # Split policies into writable tasks vs skips up front
+    tasks = {}
     skipped = 0
+    for policy in policies:
+        if policy not in grouped_data.groups:
+            skipped += 1
+            continue
+        tasks[policy] = (
+            df_cr[df_cr['policy_no'] == policy],
+            grouped_data.get_group(policy),
+        )
 
-    print(f"📊 Total policy: {total}\n")
+    print(f"📊 Total policy: {len(policies)}  |  To write: {len(tasks)}  |  Skipped: {skipped}\n")
 
-    for policy in tqdm(policies, desc="Processing", unit="policy"):
-        try:
-            df_cr_filtered = df_cr[df_cr['policy_no'] == policy]
+    success = 0
+    errors = 0
 
-            if policy not in grouped_data.groups:
-                skipped += 1
-                continue
-
-            df_data_filtered = grouped_data.get_group(policy)
-
-            company_name = str(df_cr_filtered.iloc[0]['company_name'])
-            safe_name = re.sub(r'[^\w\s-]', '', company_name)[:50]
-
-            source_name = df_data_filtered.iloc[0].get('source_name', '')
-            broker = broker_folder(source_name)
-
-            broker_dir = os.path.join(output_folder, broker)
-            os.makedirs(broker_dir, exist_ok=True)
-
-            output_file = f"Report Claim - {REPORT_PERIOD} - {safe_name}_{policy}.xlsx"
-            output_path = os.path.join(broker_dir, output_file)
-
-            data_sheet = "Benefit" if use_benefit else "Query_result"
-            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-                df_cr_filtered.to_excel(writer, sheet_name="CR", index=False)
-                df_data_filtered.to_excel(writer, sheet_name=data_sheet, index=False)
-
-            success += 1
-
-        except Exception as e:
-            print(f"\n❌ Error di policy {policy}: {e}")
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(_write_policy, policy, cr_slice, data_slice, output_folder, data_sheet, report_period): policy
+            for policy, (cr_slice, data_slice) in tasks.items()
+        }
+        with tqdm(total=len(futures), desc="Writing", unit="policy") as pbar:
+            for future in as_completed(futures):
+                policy = futures[future]
+                try:
+                    future.result()
+                    success += 1
+                except Exception as e:
+                    errors += 1
+                    tqdm.write(f"❌ Error di policy {policy}: {e}")
+                pbar.update(1)
 
     print("\n🎯 SELESAI!")
     print(f"✅ Success : {success}")
     print(f"⚠️ Skipped : {skipped}")
+    if errors:
+        print(f"❌ Errors  : {errors}")
     print(f"📦 Output  : {output_folder}")
