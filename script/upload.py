@@ -1,4 +1,5 @@
 import os
+import time
 import threading
 import concurrent.futures
 from google.oauth2 import service_account
@@ -108,6 +109,7 @@ def _upload_single_file(file_path, output_folder, drive_folder_id, service_accou
 
 
 def upload_output(output_folder, drive_folder_id, service_account_file, max_workers=20):
+    start_time = time.time()
     print("☁️  Connecting to Google Drive...")
     # Initialize main service to verify connection early
     _build_service(service_account_file)
@@ -148,7 +150,10 @@ def upload_output(output_folder, drive_folder_id, service_account_file, max_work
                 errors += 1
                 tqdm.write(f"❌ {file_path}: {err}")
 
+    end_time = time.time()
+    duration = end_time - start_time
     print("\n☁️  UPLOAD SELESAI!")
     print(f"✅ Uploaded : {uploaded}")
     if errors:
         print(f"❌ Errors   : {errors}")
+    print(f"⏱️  Duration : {duration:.2f} seconds")

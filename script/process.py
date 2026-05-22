@@ -56,7 +56,7 @@ def _write_policy(policy, df_cr_filtered, df_data_filtered, output_folder, data_
 
     safe_company = re.sub(r'[\\/:*?"<>|]', '', company_name).strip()
 
-    policy_dir = os.path.join(output_folder, broker, safe_company, policy, report_period)
+    policy_dir = os.path.join(output_folder, broker, safe_company, policy)
     os.makedirs(policy_dir, exist_ok=True)
 
     output_file = f"Report Claim - {report_period} - {safe_company}_{policy}.xlsx"
