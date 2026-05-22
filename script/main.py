@@ -34,6 +34,11 @@ parser.add_argument(
     default=get_default_period(),
     help="Report period in Indonesian format (e.g., 'Juni 2026'). Defaults to current month.",
 )
+parser.add_argument(
+    "--policy",
+    type=str,
+    help="Comma-separated list of policy numbers to filter (e.g. 'POL123,POL456').",
+)
 args = parser.parse_args()
 
 # =========================
@@ -47,6 +52,8 @@ DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
 # =========================
 # RUN PIPELINE
 # =========================
-fetch_from_metabase(CONVERT_FOLDER, use_benefit=args.benefit, report_period=args.period)
+manual_policies = [p.strip() for p in args.policy.split(",")] if args.policy else None
+
+fetch_from_metabase(CONVERT_FOLDER, use_benefit=args.benefit, report_period=args.period, manual_policies=manual_policies)
 process_join(CONVERT_FOLDER, OUTPUT_FOLDER, use_benefit=args.benefit, report_period=args.period)
 # upload_output(OUTPUT_FOLDER, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_FILE)

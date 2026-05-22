@@ -198,7 +198,7 @@ def _fetch_dashboard_csv(base_url, headers, dashboard_id, claim_before_date, pol
     return resp.text
 
 
-def fetch_from_metabase(convert_folder, use_benefit=False, report_period="Mei 2026"):
+def fetch_from_metabase(convert_folder, use_benefit=False, report_period="Mei 2026", manual_policies=None):
     base_url = _require_env("METABASE_URL").rstrip("/")
     user = _require_env("METABASE_USER")
     password = _require_env("METABASE_PASSWORD")
@@ -227,14 +227,18 @@ def fetch_from_metabase(convert_folder, use_benefit=False, report_period="Mei 20
 
     session_headers = {"X-Metabase-Session": token}
 
-    # Optional: fetch active policy list to filter dashboard results
     active_policy_nos = None
-    active_policy_card_id = os.environ.get("METABASE_ACTIVE_POLICY_CARD_ID")
-    if active_policy_card_id:
-        as_of_last_day = _as_of_last_day_value(report_period)
-        print(f"📋 Fetching active policy list (card {active_policy_card_id}, As_of={as_of_last_day})...")
-        active_policy_nos = _fetch_active_policy_nos(base_url, session_headers, active_policy_card_id, as_of_last_day)
-        print(f"   ✅ {len(active_policy_nos)} active policies\n")
+    if manual_policies:
+        active_policy_nos = manual_policies
+        print(f"📋 Using {len(active_policy_nos)} manually provided policies...\n")
+    else:
+        # Optional: fetch active policy list to filter dashboard results
+        active_policy_card_id = os.environ.get("METABASE_ACTIVE_POLICY_CARD_ID")
+        if active_policy_card_id:
+            as_of_last_day = _as_of_last_day_value(report_period)
+            print(f"📋 Fetching active policy list (card {active_policy_card_id}, As_of={as_of_last_day})...")
+            active_policy_nos = _fetch_active_policy_nos(base_url, session_headers, active_policy_card_id, as_of_last_day)
+            print(f"   ✅ {len(active_policy_nos)} active policies\n")
 
     # 1+2. Fetch CR and claim/benefit data in parallel (both depend on active_policy_nos)
     policy_count_label = f", {len(active_policy_nos)} policies" if active_policy_nos else ""
