@@ -44,6 +44,12 @@ You can generate reports for a specific past or future month by passing the `--p
 python script/main.py --period "Februari 2026"
 ```
 
+### Filter by Specific Policies
+You can filter the execution to only run for specific policies. Pass a single policy or a comma-separated list of policies. This makes the pipeline significantly faster by skipping the active policy lookup.
+```bash
+python script/main.py --policy "POL-12345,POL-98765"
+```
+
 ### Benefit-level report
 If you need to fetch from the benefit-level dashboard instead of the claim-level dashboard, use the `--benefit` flag.
 ```bash

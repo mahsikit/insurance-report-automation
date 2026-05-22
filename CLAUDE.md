@@ -152,6 +152,12 @@ To run for a specific month:
 python3 script/main.py --period "Februari 2026"
 ```
 
+### Filter by Specific Policies
+You can filter the execution to only run for specific policies. Pass a single policy or a comma-separated list of policies. This makes the pipeline significantly faster by skipping the active policy lookup.
+```bash
+python3 script/main.py --policy "POL-12345,POL-98765"
+```
+
 ### Benefit-level report
 ```bash
 python3 script/main.py --benefit
