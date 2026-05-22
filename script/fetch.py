@@ -1,5 +1,6 @@
 import os
 import requests
+import calendar
 from concurrent.futures import ThreadPoolExecutor
 
 CR_FILENAME = "claim_ratio_CR.csv"
@@ -43,11 +44,41 @@ def _as_of_value(report_period):
     return f"{year:04d}-{month:02d}"
 
 
-def _fetch_active_policy_nos(base_url, headers, card_id):
+def _as_of_last_day_value(report_period):
+    """'Mei 2026' → '2026-05-31'  (Last day of the month)"""
+    parts = report_period.strip().split()
+    month = INDONESIAN_MONTHS[parts[0].lower()]
+    year = int(parts[1])
+    _, last_day = calendar.monthrange(year, month)
+    return f"{year:04d}-{month:02d}-{last_day:02d}"
+
+
+def _fetch_active_policy_nos(base_url, headers, card_id, as_of_date):
     """Fetch the active policy list from a saved question → list of policy_no strings."""
+    card = requests.get(
+        f"{base_url}/api/card/{card_id}",
+        headers=headers,
+        timeout=30,
+    ).json()
+
+    params_payload = []
+    for param in card.get("parameters", []):
+        slug = param.get("slug", "")
+        param_id = param["id"]
+        param_type = param.get("type", "")
+        target = param.get("target")
+
+        # The user mentioned 'As_of' but we'll accept 'As_Of' too to be safe
+        if slug.lower() == "as_of":
+            entry = {"id": param_id, "type": param_type, "value": as_of_date}
+            if target:
+                entry["target"] = target
+            params_payload.append(entry)
+
     resp = requests.post(
         f"{base_url}/api/card/{card_id}/query/csv",
         headers=headers,
+        json={"parameters": params_payload},
         timeout=60,
     )
     resp.raise_for_status()
@@ -200,8 +231,9 @@ def fetch_from_metabase(convert_folder, use_benefit=False, report_period="Mei 20
     active_policy_nos = None
     active_policy_card_id = os.environ.get("METABASE_ACTIVE_POLICY_CARD_ID")
     if active_policy_card_id:
-        print(f"📋 Fetching active policy list (card {active_policy_card_id})...")
-        active_policy_nos = _fetch_active_policy_nos(base_url, session_headers, active_policy_card_id)
+        as_of_last_day = _as_of_last_day_value(report_period)
+        print(f"📋 Fetching active policy list (card {active_policy_card_id}, As_of={as_of_last_day})...")
+        active_policy_nos = _fetch_active_policy_nos(base_url, session_headers, active_policy_card_id, as_of_last_day)
         print(f"   ✅ {len(active_policy_nos)} active policies\n")
 
     # 1+2. Fetch CR and claim/benefit data in parallel (both depend on active_policy_nos)

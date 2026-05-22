@@ -42,11 +42,11 @@ args = parser.parse_args()
 CONVERT_FOLDER = os.path.join(BASE_DIR, "convert_csv")
 OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
 SERVICE_ACCOUNT_FILE = os.path.join(BASE_DIR, "service_account.json")
-DRIVE_FOLDER_ID = "1p0rEm8YrQx6GR5W6AdmYz0nX7ipZDX94"
+DRIVE_FOLDER_ID = os.environ.get("GOOGLE_DRIVE_FOLDER_ID")
 
 # =========================
 # RUN PIPELINE
 # =========================
 fetch_from_metabase(CONVERT_FOLDER, use_benefit=args.benefit, report_period=args.period)
 process_join(CONVERT_FOLDER, OUTPUT_FOLDER, use_benefit=args.benefit, report_period=args.period)
-upload_output(OUTPUT_FOLDER, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_FILE)
+# upload_output(OUTPUT_FOLDER, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_FILE)
