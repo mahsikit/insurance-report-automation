@@ -9,17 +9,14 @@ on:
         description: 'Report Period (e.g. Februari 2026)'
         required: true
         default: 'Februari 2026'
-        type: string
       use_benefit:
         description: 'Use Benefit Dashboard instead of Query Result'
         required: false
-        default: false
-        type: boolean
+        default: 'false'
       manual_policies:
         description: 'Comma-separated manual policies (optional)'
         required: false
         default: ''
-        type: string
 
 jobs:
   run-report:
