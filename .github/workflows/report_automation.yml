@@ -55,10 +55,14 @@ jobs:
           METABASE_ACTIVE_POLICY_CARD_ID: ${{ secrets.METABASE_ACTIVE_POLICY_CARD_ID }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: |
-          # Read parameters from Gitea UI
-          PERIOD="${{ inputs.period }}"
-          USE_BENEFIT="${{ inputs.use_benefit }}"
-          MANUAL_POLICIES="${{ inputs.manual_policies }}"
+          # Safely read parameters from Gitea UI
+          PERIOD="${{ github.event.inputs.period || inputs.period }}"
+          if [ -z "$PERIOD" ]; then
+            PERIOD="Februari 2026"
+          fi
+          
+          USE_BENEFIT="${{ github.event.inputs.use_benefit || inputs.use_benefit }}"
+          MANUAL_POLICIES="${{ github.event.inputs.manual_policies || inputs.manual_policies }}"
           
           ARGS="--period '$PERIOD'"
           if [ "$USE_BENEFIT" == "true" ]; then
