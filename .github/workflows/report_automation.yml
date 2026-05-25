@@ -2,12 +2,45 @@ name: Satria Data Report Automation
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 jobs:
-  test-job:
+  run-report:
     runs-on: ubuntu-latest
+    
     steps:
-      - run: echo "Hello world"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create Service Account JSON
+        run: |
+          echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > service_account.json
+
+      - name: Run Script
+        env:
+          METABASE_URL: ${{ secrets.METABASE_URL }}
+          METABASE_USER: ${{ secrets.METABASE_USER }}
+          METABASE_PASSWORD: ${{ secrets.METABASE_PASSWORD }}
+          METABASE_CR_CARD_ID: ${{ secrets.METABASE_CR_CARD_ID }}
+          METABASE_QUERY_CARD_ID: ${{ secrets.METABASE_QUERY_CARD_ID }}
+          METABASE_BENEFIT_CARD_ID: ${{ secrets.METABASE_BENEFIT_CARD_ID }}
+          METABASE_ACTIVE_POLICY_CARD_ID: ${{ secrets.METABASE_ACTIVE_POLICY_CARD_ID }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+        run: |
+          # Default period
+          ARGS="--period 'Februari 2026'"
+          
+          echo "Running with arguments: $ARGS"
+          eval "python script/main.py $ARGS"
