@@ -45,6 +45,7 @@ jobs:
 
       - name: Run Script
         env:
+          PYTHONIOENCODING: utf-8
           METABASE_URL: ${{ secrets.METABASE_URL }}
           METABASE_USER: ${{ secrets.METABASE_USER }}
           METABASE_PASSWORD: ${{ secrets.METABASE_PASSWORD }}
