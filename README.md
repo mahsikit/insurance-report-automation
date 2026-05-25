@@ -62,6 +62,30 @@ The script will process the data locally before uploading it to Google Drive. Th
 output/<source_name>/<company_name>/<policy_no>/Report Claim - <PERIOD> - <COMPANY>_<POLICY>.xlsx
 ```
 
+## Gitea Actions Automation
+This project is configured to run automatically using Gitea Actions!
+Instead of running it locally on your Mac, you can trigger it directly from the Gitea website:
+1. Go to your repository on Gitea.
+2. Click the **Actions** tab.
+3. Select the **Satria Data Report Automation** workflow on the left side.
+4. Click the **Run workflow** button.
+5. A menu will appear where you can type in the **Period** (e.g. `Februari 2026`) and optionally supply a comma-separated list of **Manual Policies** if you only want to process specific policies.
+6. Click **Run workflow**!
+
+Gitea will spin up an isolated Ubuntu runner, download your data from Metabase, process all the files, and upload them to Google Drive in the background!
+
+### Required Secrets
+To make the automation work, the following secrets must be added to your repository (Settings -> Actions -> Secrets):
+- `METABASE_URL`
+- `METABASE_USER`
+- `METABASE_PASSWORD`
+- `METABASE_CR_CARD_ID`
+- `METABASE_QUERY_CARD_ID`
+- `METABASE_BENEFIT_CARD_ID`
+- `METABASE_ACTIVE_POLICY_CARD_ID`
+- `GOOGLE_DRIVE_FOLDER_ID`
+- `SERVICE_ACCOUNT_JSON` (The entire contents of your Google Service Account JSON file)
+
 ## Architecture
 - `script/main.py`: Entry point that orchestrates the fetch → process → upload pipeline.
 - `script/fetch.py`: Pulls data from Metabase using session tokens and parallel requests.
