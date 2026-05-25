@@ -1,0 +1,16 @@
+FROM n8nio/runners:2.7.4
+
+USER root
+
+# 1. Install the Python libraries
+RUN cd /opt/runners/task-runner-python && \
+    uv pip install requests pandas openpyxl xlsxwriter tqdm python-dotenv google-api-python-client google-auth
+
+# 2. Safely inject EXTERNAL libraries into the allowlist
+RUN sed -i 's/"N8N_RUNNERS_EXTERNAL_ALLOW": ""/"N8N_RUNNERS_EXTERNAL_ALLOW": "requests,pandas,openpyxl,xlsxwriter,tqdm,google,googleapiclient"/g' /etc/n8n-task-runners.json
+
+# 3. Safely inject STANDARD built-in libraries into the allowlist
+# NOTE: Added 'builtins', 'io', and 'pathlib' to explicitly allow basic file operations like 'open'
+RUN sed -i 's/"N8N_RUNNERS_STDLIB_ALLOW": ""/"N8N_RUNNERS_STDLIB_ALLOW": "os,datetime,calendar,concurrent,threading,time,re,builtins,io,pathlib,base64"/g' /etc/n8n-task-runners.json
+
+USER runner

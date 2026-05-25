@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # 1. GITEA SERVER
+  # ==========================================
+  gitea:
+    image: gitea/gitea:1.21.11
+    container_name: gitea
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=sqlite3
+      # Enable Gitea Actions
+      - GITEA__actions__ENABLED=true
+    restart: always
+    volumes:
+      - gitea_data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - "3000:3000"
+      - "222:22"
+
+  # ==========================================
+  # 2. GITEA ACTIONS RUNNER
+  # ==========================================
+  gitea-runner:
+    image: gitea/act_runner:latest
+    container_name: gitea_runner
+    restart: always
+    depends_on:
+      - gitea
+    environment:
+      # You need to generate a registration token in your Gitea UI:
+      # Site Administration -> Actions -> Runners -> Create New Runner
+      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_RUNNER_REGISTRATION_TOKEN=your_registration_token_here
+      - GITEA_RUNNER_NAME=main_ubuntu_runner
+      # The runner uses standard Ubuntu images for compatibility with GitHub Actions
+      - GITEA_RUNNER_LABELS=ubuntu-latest:docker://gitea/runner-images:ubuntu-latest
+    volumes:
+      - gitea_runner_data:/data
+      # The runner needs access to the Docker daemon to spin up job containers
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  gitea_data:
+  gitea_runner_data:

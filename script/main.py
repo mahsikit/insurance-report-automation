@@ -56,4 +56,4 @@ manual_policies = [p.strip() for p in args.policy.split(",")] if args.policy els
 
 fetch_from_metabase(CONVERT_FOLDER, use_benefit=args.benefit, report_period=args.period, manual_policies=manual_policies)
 process_join(CONVERT_FOLDER, OUTPUT_FOLDER, use_benefit=args.benefit, report_period=args.period)
-# upload_output(OUTPUT_FOLDER, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_FILE)
+upload_output(OUTPUT_FOLDER, DRIVE_FOLDER_ID, SERVICE_ACCOUNT_FILE)
