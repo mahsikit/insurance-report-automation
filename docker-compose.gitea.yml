@@ -5,7 +5,7 @@ services:
   # 1. GITEA SERVER
   # ==========================================
   gitea:
-    image: gitea/gitea:1.22
+    image: gitea/gitea:1.26
     container_name: gitea
     environment:
       - USER_UID=1000

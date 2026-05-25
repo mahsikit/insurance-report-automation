@@ -128,6 +128,7 @@ def _fetch_cr_csv(base_url, headers, card_id, as_of, policy_nos=None):
         timeout=120,
     )
     resp.raise_for_status()
+    print(f"\n--- DEBUG: CR CSV OUTPUT (first 300 chars) ---\n{resp.text[:300]}\n----------------------------------------------")
     return resp.text
 
 
@@ -195,6 +196,7 @@ def _fetch_dashboard_csv(base_url, headers, dashboard_id, claim_before_date, pol
         timeout=120,
     )
     resp.raise_for_status()
+    print(f"\n--- DEBUG: DASHBOARD CSV OUTPUT (first 300 chars) ---\n{resp.text[:300]}\n----------------------------------------------")
     return resp.text
 
 
