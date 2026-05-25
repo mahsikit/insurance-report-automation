@@ -4,6 +4,22 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      period:
+        description: 'Report Period (e.g. Februari 2026)'
+        required: true
+        default: 'Februari 2026'
+        type: string
+      use_benefit:
+        description: 'Use Benefit Dashboard instead of Query Result'
+        required: false
+        default: false
+        type: boolean
+      manual_policies:
+        description: 'Comma-separated manual policies (optional)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   run-report:
@@ -38,10 +54,10 @@ jobs:
           METABASE_ACTIVE_POLICY_CARD_ID: ${{ secrets.METABASE_ACTIVE_POLICY_CARD_ID }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: |
-          # Configure your parameters here before running:
-          PERIOD="Februari 2026"
-          USE_BENEFIT="false"
-          MANUAL_POLICIES="" # Example: "12345,67890" (leave empty to run all)
+          # Read parameters from Gitea UI
+          PERIOD="${{ inputs.period }}"
+          USE_BENEFIT="${{ inputs.use_benefit }}"
+          MANUAL_POLICIES="${{ inputs.manual_policies }}"
           
           ARGS="--period '$PERIOD'"
           if [ "$USE_BENEFIT" == "true" ]; then
