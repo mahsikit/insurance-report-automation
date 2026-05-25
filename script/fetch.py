@@ -177,6 +177,12 @@ def _fetch_dashboard_csv(base_url, headers, dashboard_id, claim_before_date, pol
                 entry["target"] = target
             params_payload.append(entry)
 
+        elif slug == "is_aso":
+            entry = {"id": param_id, "type": param_type, "value": "false"}
+            if target:
+                entry["target"] = target
+            params_payload.append(entry)
+
         elif slug == "policy_no" and policy_nos:
             entry = {"id": param_id, "type": param_type, "value": policy_nos}
             if target:
