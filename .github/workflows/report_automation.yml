@@ -38,8 +38,18 @@ jobs:
           METABASE_ACTIVE_POLICY_CARD_ID: ${{ secrets.METABASE_ACTIVE_POLICY_CARD_ID }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
         run: |
-          # Default period
-          ARGS="--period 'Februari 2026'"
+          # Configure your parameters here before running:
+          PERIOD="Februari 2026"
+          USE_BENEFIT="false"
+          MANUAL_POLICIES="" # Example: "12345,67890" (leave empty to run all)
+          
+          ARGS="--period '$PERIOD'"
+          if [ "$USE_BENEFIT" == "true" ]; then
+            ARGS="$ARGS --benefit"
+          fi
+          if [ -n "$MANUAL_POLICIES" ]; then
+            ARGS="$ARGS --policy '$MANUAL_POLICIES'"
+          fi
           
           echo "Running with arguments: $ARGS"
           eval "python script/main.py $ARGS"
