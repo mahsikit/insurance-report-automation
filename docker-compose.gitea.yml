@@ -34,16 +34,16 @@ services:
     environment:
       # You need to generate a registration token in your Gitea UI:
       # Site Administration -> Actions -> Runners -> Create New Runner
-      - GITEA_INSTANCE_URL=http://gitea:3000
+      - GITEA_INSTANCE_URL=http://192.168.0.75:3000
       - GITEA_RUNNER_REGISTRATION_TOKEN=XVgDdZL8iaTL922PrMs3n9HnXBZ8hgvCkvGLXMvX
       - GITEA_RUNNER_NAME=main_ubuntu_runner
       # The runner uses standard Ubuntu images for compatibility with GitHub Actions
       - GITEA_RUNNER_LABELS=ubuntu-latest:docker://gitea/runner-images:ubuntu-latest
     volumes:
-      - gitea_runner_data:/data
+      - gitea_runner_data_v2:/data
       # The runner needs access to the Docker daemon to spin up job containers
       - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   gitea_data:
-  gitea_runner_data:
+  gitea_runner_data_v2:
