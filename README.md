@@ -1,93 +1,128 @@
 # Insurance Report Automation
 
-This project automates the generation of per-policy insurance claim Excel reports. It fetches data directly from Metabase via API, joins claim ratios with raw claim/benefit data, generates individual Excel files for each active policy, and uploads them securely to Google Drive.
+Generates per-policy insurance claim Excel reports, uploads them to Google Drive, writes back links to a master tracking spreadsheet, and emails the reports to recipients — all from a single command.
 
 ## Features
-- **Fully Automated Data Pipeline**: Fetches Claim Ratios and Raw Claims concurrently from Metabase.
-- **Parallel Processing**: Uses multi-threading to write Excel files and upload to Google Drive blazingly fast.
-- **Smart Uploads**: Detects if a report already exists on Google Drive and updates it instead of creating duplicates.
-- **Dynamic Periods**: Automatically defaults to the current month or accepts any specific past/future period via command line.
+- **Fully Automated Pipeline**: Fetches Claim Ratios and Raw Claims concurrently from Metabase, generates one `.xlsx` per policy, uploads to Drive, updates the master sheet, and sends grouped emails.
+- **Parallel Processing**: Multi-threaded Excel writing and Drive uploads.
+- **Smart Uploads**: Updates an existing Drive file instead of creating a duplicate.
+- **Email Grouping**: Policies sharing the same To/CC pair are combined into one email with multiple attachments.
+- **Dynamic Periods**: Defaults to the current month; accepts any Indonesian-format period via `--period`.
 
 ## Prerequisites
 - Python 3.8+
-- A Google Cloud Service Account with Editor access to the target Google Drive folder.
+- A Google Cloud project with Drive, Sheets, and Gmail APIs enabled.
+- An **OAuth 2.0 Desktop** client secret file (download from Google Cloud Console → APIs & Services → Credentials).
 - Metabase account credentials.
 
 ## Setup
 
-1. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 1. Install dependencies
+```bash
+pip install -r requirements.txt
+```
 
-2. **Configure Environment Variables**
-   Copy the example template to a new `.env` file:
-   ```bash
-   cp .env.example .env
-   ```
-   Open `.env` and fill in your Metabase credentials, target Card/Dashboard IDs, and the target Google Drive Folder ID.
+### 2. Configure environment variables
+```bash
+cp .env.example .env
+```
+Open `.env` and fill in all required values (see the table below).
 
-3. **Google Drive Service Account**
-   Place your Google Service Account key file at the root of the project and name it `service_account.json`. (Note: This file is ignored by Git to keep your credentials secure).
+### 3. Place the OAuth client secret
+Download the OAuth 2.0 Desktop client JSON from Google Cloud Console and put it at the project root. Set `GOOGLE_OAUTH_CLIENT_SECRET` in `.env` to its filename.
+
+### 4. First run — browser consent
+The first time you run the pipeline, a browser window opens asking you to grant Drive, Sheets, and Gmail access to the pipeline. After approving, a `token.json` file is created at the project root. Subsequent runs use that token silently (auto-refreshed).
+
+If you have multiple Google accounts in your browser, set `GOOGLE_LOGIN_HINT=you@example.com` in `.env` to pre-select the right account.
 
 ## Usage
 
-### Claim-level report (Default)
-Run the pipeline for the current month. This will fetch from the primary dashboard (e.g., Query_result).
+### Claim-level report (default)
 ```bash
-python script/main.py
+python3 script/main.py
 ```
 
-### Specific Report Period
-You can generate reports for a specific past or future month by passing the `--period` argument (using Indonesian month names).
+### Specific report period
 ```bash
-python script/main.py --period "Februari 2026"
+python3 script/main.py --period "Februari 2026"
 ```
 
-### Filter by Specific Policies
-You can filter the execution to only run for specific policies. Pass a single policy or a comma-separated list of policies. This makes the pipeline significantly faster by skipping the active policy lookup.
+### Filter by specific policies
 ```bash
-python script/main.py --policy "POL-12345,POL-98765"
+python3 script/main.py --policy "POL-12345,POL-98765"
 ```
 
 ### Benefit-level report
-If you need to fetch from the benefit-level dashboard instead of the claim-level dashboard, use the `--benefit` flag.
 ```bash
-python script/main.py --benefit
+python3 script/main.py --benefit
 ```
 
-## Output Structure
-The script will process the data locally before uploading it to Google Drive. The output is structured exactly like this:
+### Safe runs — always preview first
+
+**Dry run** (upload + sheet update happen, emails are only previewed):
+```bash
+python3 script/main.py --period "Mei 2026" --dry-run
+```
+
+When you run without `--dry-run`, the pipeline prints the email plan and asks for confirmation before sending. Type `y` to proceed, anything else to abort.
+
+To skip the confirmation prompt in non-interactive environments (e.g. Gitea Actions):
+```bash
+python3 script/main.py --yes
+```
+
+> **Tip**: Always use `--policy` with a single test policy and `--dry-run` when verifying a new setup.
+
+## Master spreadsheet column layout
+
+`sheets.py` matches rows by **column H** (policy_no) and writes to columns D and E. Columns F and G supply recipient addresses. This layout is load-bearing — if the sheet is reorganised the script must be updated accordingly.
+
+| Column | Content | Direction |
+|---|---|---|
+| H | `policy_no` (match key) | read |
+| F | To address(es), comma or semicolon separated | read |
+| G | Cc address(es), comma or semicolon separated | read |
+| D | Drive `webViewLink` of the uploaded report | **written** |
+| E | "Latest As Of" (`YYYY-MM` e.g. `2026-05`) | **written** |
+
+## Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `METABASE_URL` | Yes | `https://metabase.yourcompany.com` |
+| `METABASE_USER` | Yes | Metabase login email |
+| `METABASE_PASSWORD` | Yes | Metabase login password |
+| `METABASE_CR_CARD_ID` | Yes | Saved question ID for claim ratio |
+| `METABASE_QUERY_CARD_ID` | Yes | Dashboard ID for raw claim data |
+| `METABASE_BENEFIT_CARD_ID` | Optional | Dashboard ID for benefit-level data |
+| `METABASE_ACTIVE_POLICY_CARD_ID` | Optional | Card ID for active policy list filter |
+| `GOOGLE_DRIVE_FOLDER_ID` | Yes | Target Google Drive folder ID |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Yes | Filename of the OAuth 2.0 Desktop client JSON |
+| `MASTER_SPREADSHEET_ID` | Yes | Google Sheets spreadsheet ID (from the URL) |
+| `MASTER_SHEET_NAME` | Yes | Sheet tab name (e.g. `2026`) |
+| `GOOGLE_LOGIN_HINT` | Optional | Pre-fills the Google account chooser on first consent |
+
+## Output structure
 ```
 output/<source_name>/<company_name>/<policy_no>/Report Claim - <PERIOD> - <COMPANY>_<POLICY>.xlsx
 ```
 
-## Gitea Actions Automation
-This project is configured to run automatically using Gitea Actions!
-Instead of running it locally on your Mac, you can trigger it directly from the Gitea website:
-1. Go to your repository on Gitea.
-2. Click the **Actions** tab.
-3. Select the **Satria Data Report Automation** workflow on the left side.
-4. Click the **Run workflow** button.
-5. A menu will appear where you can type in the **Period** (e.g. `Februari 2026`) and optionally supply a comma-separated list of **Manual Policies** if you only want to process specific policies.
-6. Click **Run workflow**!
-
-Gitea will spin up an isolated Ubuntu runner, download your data from Metabase, process all the files, and upload them to Google Drive in the background!
-
-### Required Secrets
-To make the automation work, the following secrets must be added to your repository (Settings -> Actions -> Secrets):
-- `METABASE_URL`
-- `METABASE_USER`
-- `METABASE_PASSWORD`
-- `METABASE_CR_CARD_ID`
-- `METABASE_QUERY_CARD_ID`
-- `METABASE_BENEFIT_CARD_ID`
-- `METABASE_ACTIVE_POLICY_CARD_ID`
-- `GOOGLE_DRIVE_FOLDER_ID`
-- `SERVICE_ACCOUNT_JSON` (The entire contents of your Google Service Account JSON file)
-
 ## Architecture
-- `script/main.py`: Entry point that orchestrates the fetch → process → upload pipeline.
-- `script/fetch.py`: Pulls data from Metabase using session tokens and parallel requests.
-- `script/process.py`: Joins the CR and claim data, filters, and writes Excel files concurrently.
-- `script/upload.py`: Handles Google Drive folder tree creation and safe, multi-threaded file uploads.
+- `script/main.py` — Entry point; orchestrates fetch → process → upload → sheet update → email.
+- `script/auth.py` — OAuth 2.0 Desktop flow; caches credentials in `token.json`.
+- `script/fetch.py` — Pulls data from Metabase (concurrent CR + dashboard fetch).
+- `script/process.py` — Joins CR + claim data; writes one Excel per policy (parallel).
+- `script/upload.py` — Uploads the output folder tree to Google Drive (parallel, safe overwrite).
+- `script/sheets.py` — Updates columns D & E of the master tracking sheet; returns recipient map.
+- `script/email_sender.py` — Groups policies by To/CC pair; sends one email per group via Gmail API. Edit the `SUBJECT_TEMPLATE` / `BODY_TEMPLATE` constants at the top of the file to customise the email content.
+
+## Gitea Actions Automation
+Trigger manually from the Gitea Actions tab. Requires `--yes` to be added to the pipeline command in the workflow YAML (non-interactive environment).
+
+### Required secrets
+- `METABASE_URL`, `METABASE_USER`, `METABASE_PASSWORD`
+- `METABASE_CR_CARD_ID`, `METABASE_QUERY_CARD_ID`
+- `METABASE_BENEFIT_CARD_ID`, `METABASE_ACTIVE_POLICY_CARD_ID`
+- `GOOGLE_DRIVE_FOLDER_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `MASTER_SPREADSHEET_ID`, `MASTER_SHEET_NAME`
+- `TOKEN_JSON` (contents of `token.json` generated locally after first consent)

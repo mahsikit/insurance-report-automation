@@ -1,14 +1,12 @@
 name: Satria Data Report Automation
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       period:
-        description: 'Report Period (e.g. Februari 2026)'
+        description: 'Report Period (e.g. Mei 2026)'
         required: true
-        default: 'Februari 2026'
+        default: 'Mei 2026'
         type: string
       use_benefit:
         description: 'Use Benefit Dashboard instead of Query Result'
@@ -16,15 +14,21 @@ on:
         default: false
         type: boolean
       manual_policies:
-        description: 'Comma-separated manual policies (optional)'
+        description: 'Comma-separated policy numbers (optional, leave blank for all)'
         required: false
         default: ''
         type: string
+      dry_run:
+        description: 'Dry run — upload & sheet update run, but no emails are sent'
+        required: false
+        default: false
+        type: boolean
+
 
 jobs:
   run-report:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,11 +43,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Create Service Account JSON
+      - name: Write OAuth credentials
         run: |
-          echo '${{ secrets.SERVICE_ACCOUNT_JSON }}' > service_account.json
+          echo '${{ secrets.OAUTH_CLIENT_SECRET_JSON }}' > "${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}"
+          echo '${{ secrets.TOKEN_JSON }}' > token.json
 
-      - name: Run Script
+      - name: Run pipeline
         env:
           PYTHONIOENCODING: utf-8
           METABASE_URL: ${{ secrets.METABASE_URL }}
@@ -54,23 +59,21 @@ jobs:
           METABASE_BENEFIT_CARD_ID: ${{ secrets.METABASE_BENEFIT_CARD_ID }}
           METABASE_ACTIVE_POLICY_CARD_ID: ${{ secrets.METABASE_ACTIVE_POLICY_CARD_ID }}
           GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          GOOGLE_OAUTH_CLIENT_SECRET: ${{ secrets.GOOGLE_OAUTH_CLIENT_SECRET }}
+          MASTER_SPREADSHEET_ID: ${{ secrets.MASTER_SPREADSHEET_ID }}
+          MASTER_SHEET_NAME: ${{ secrets.MASTER_SHEET_NAME }}
         run: |
-          # Safely read parameters from Gitea UI
-          PERIOD="${{ github.event.inputs.period || inputs.period }}"
-          if [ -z "$PERIOD" ]; then
-            PERIOD="Februari 2026"
-          fi
-          
-          USE_BENEFIT="${{ github.event.inputs.use_benefit || inputs.use_benefit }}"
-          MANUAL_POLICIES="${{ github.event.inputs.manual_policies || inputs.manual_policies }}"
-          
-          ARGS="--period '$PERIOD'"
-          if [ "$USE_BENEFIT" == "true" ]; then
+          ARGS="--period '${{ github.event.inputs.period }}' --yes"
+
+          if [ "${{ github.event.inputs.use_benefit }}" == "true" ]; then
             ARGS="$ARGS --benefit"
           fi
-          if [ -n "$MANUAL_POLICIES" ]; then
-            ARGS="$ARGS --policy '$MANUAL_POLICIES'"
+          if [ -n "${{ github.event.inputs.manual_policies }}" ]; then
+            ARGS="$ARGS --policy '${{ github.event.inputs.manual_policies }}'"
           fi
-          
-          echo "Running with arguments: $ARGS"
-          eval "python script/main.py $ARGS"
+          if [ "${{ github.event.inputs.dry_run }}" == "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+
+          echo "Running: python3 script/main.py $ARGS"
+          eval "python3 script/main.py $ARGS"

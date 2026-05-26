@@ -66,6 +66,9 @@ def _write_policy(policy, df_cr_filtered, df_data_filtered, output_folder, data_
         df_cr_filtered.to_excel(writer, sheet_name="CR", index=False)
         df_data_filtered.to_excel(writer, sheet_name=data_sheet, index=False)
 
+    return {"file_path": output_path, "policy_no": policy,
+            "company_name": company_name, "source_name": str(source_name).strip()}
+
 
 def process_join(convert_folder, output_folder, use_benefit=False, report_period="Mei 2026"):
     mode_label = "BENEFIT LEVEL" if use_benefit else "CLAIM LEVEL"
@@ -111,6 +114,7 @@ def process_join(convert_folder, output_folder, use_benefit=False, report_period
 
     success = 0
     errors = 0
+    written_files: list[dict] = []
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
@@ -121,7 +125,7 @@ def process_join(convert_folder, output_folder, use_benefit=False, report_period
             for future in as_completed(futures):
                 policy = futures[future]
                 try:
-                    future.result()
+                    written_files.append(future.result())
                     success += 1
                 except Exception as e:
                     errors += 1
@@ -134,3 +138,5 @@ def process_join(convert_folder, output_folder, use_benefit=False, report_period
     if errors:
         print(f"❌ Errors  : {errors}")
     print(f"📦 Output  : {output_folder}")
+
+    return written_files

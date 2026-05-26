@@ -2,12 +2,11 @@ import os
 import time
 import threading
 import concurrent.futures
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload
 from tqdm import tqdm
 
-SCOPES = ["https://www.googleapis.com/auth/drive"]
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 FOLDER_MIME = "application/vnd.google-apps.folder"
 
@@ -15,28 +14,23 @@ folder_lock = threading.Lock()
 thread_local = threading.local()
 
 
-def _build_service(service_account_file):
-    creds = service_account.Credentials.from_service_account_file(
-        service_account_file, scopes=SCOPES
-    )
-    return build("drive", "v3", credentials=creds, cache_discovery=False)
+def _build_drive_service(credentials):
+    return build("drive", "v3", credentials=credentials, cache_discovery=False)
 
 
-def _get_service(service_account_file):
-    if not hasattr(thread_local, "service"):
-        thread_local.service = _build_service(service_account_file)
-    return thread_local.service
+def _get_drive_service(credentials):
+    if not hasattr(thread_local, "drive_service"):
+        thread_local.drive_service = _build_drive_service(credentials)
+    return thread_local.drive_service
 
 
 def _get_or_create_folder(service, name, parent_id, cache):
     key = (parent_id, name)
-    
-    # Fast check without lock
+
     if key in cache:
         return cache[key]
 
     with folder_lock:
-        # Double check after acquiring lock
         if key in cache:
             return cache[key]
 
@@ -63,11 +57,14 @@ def _get_or_create_folder(service, name, parent_id, cache):
         return folder_id
 
 
-def _upload_single_file(file_path, output_folder, drive_folder_id, service_account_file, folder_cache):
+def _upload_single_file(file_path, output_folder, drive_folder_id, credentials, folder_cache, extra_meta=None):
     try:
-        service = _get_service(service_account_file)
+        service = _get_drive_service(credentials)
         rel = os.path.relpath(file_path, output_folder)
         parts = rel.split(os.sep)
+
+        # parts: [source_name, company_name, policy_no, filename]
+        policy_no = parts[-2] if len(parts) >= 2 else ""
 
         parent_id = drive_folder_id
         for folder_name in parts[:-1]:
@@ -76,84 +73,111 @@ def _upload_single_file(file_path, output_folder, drive_folder_id, service_accou
         file_name = parts[-1]
         safe_name = file_name.replace("'", "\\'")
         query = f"name='{safe_name}' and '{parent_id}' in parents and trashed=false"
-        
-        # Check if file exists
+
         res = service.files().list(
             q=query, fields="files(id)", pageSize=1,
             supportsAllDrives=True, includeItemsFromAllDrives=True,
         ).execute()
-        files = res.get("files", [])
+        existing = res.get("files", [])
 
         media = MediaFileUpload(file_path, mimetype=XLSX_MIME, resumable=False)
-        
-        if files:
-            # File exists, update it
-            file_id = files[0]["id"]
+
+        if existing:
+            file_id = existing[0]["id"]
             service.files().update(
                 fileId=file_id,
                 media_body=media,
                 supportsAllDrives=True,
             ).execute()
         else:
-            # File does not exist, create it
-            service.files().create(
+            result = service.files().create(
                 body={"name": file_name, "parents": [parent_id]},
                 media_body=media,
                 fields="id",
                 supportsAllDrives=True,
             ).execute()
-            
-        return True, file_path, None
-    except Exception as e:
-        return False, file_path, e
+            file_id = result.get("id", "")
+
+        web_view_link = f"https://drive.google.com/file/d/{file_id}/view" if file_id else ""
+        return True, policy_no, file_id, web_view_link, file_path, extra_meta, None
+    except (HttpError, OSError) as e:
+        return False, "", "", "", file_path, extra_meta, e
 
 
-def upload_output(output_folder, drive_folder_id, service_account_file, max_workers=20):
+def upload_output(output_folder, drive_folder_id, credentials, specific_files=None, max_workers=20):  # Drive API write quota (~10 QPS/user) is the real ceiling, not thread count
+    """Upload .xlsx files and return a dict keyed by policy_no.
+
+    If specific_files is provided, only those files are uploaded.
+    Otherwise falls back to walking the entire output_folder.
+    """
     start_time = time.time()
     print("☁️  Connecting to Google Drive...")
-    # Initialize main service to verify connection early
-    _build_service(service_account_file)
+    _build_drive_service(credentials)
     folder_cache = {}
 
-    all_files = []
-    for root, _, files in os.walk(output_folder):
-        for fname in files:
-            if fname.endswith(".xlsx"):
-                all_files.append(os.path.join(root, fname))
+    # specific_files may be a list of dicts {file_path, policy_no, company_name, source_name}
+    # or a plain list of file paths (fallback).
+    meta_map: dict[str, dict] = {}
+    if specific_files is not None:
+        all_files = []
+        for item in specific_files:
+            if isinstance(item, dict):
+                fp = item.get("file_path", "")
+                if fp and fp.endswith(".xlsx"):
+                    all_files.append(fp)
+                    meta_map[fp] = item
+            elif isinstance(item, str) and item.endswith(".xlsx"):
+                all_files.append(item)
+    else:
+        for root, _, files in os.walk(output_folder):
+            for fname in files:
+                if fname.endswith(".xlsx"):
+                    all_files.append(os.path.join(root, fname))
 
     if not all_files:
         print("   ⚠️  No files to upload.")
-        return
+        return {}
 
     print(f"   ✅ {len(all_files)} files to upload\n")
 
     uploaded = 0
     errors = 0
+    # policy_no → {file_id, web_view_link, file_path}
+    upload_results: dict[str, dict] = {}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
             executor.submit(
-                _upload_single_file, 
-                file_path, 
-                output_folder, 
-                drive_folder_id, 
-                service_account_file, 
-                folder_cache
+                _upload_single_file,
+                file_path,
+                output_folder,
+                drive_folder_id,
+                credentials,
+                folder_cache,
+                meta_map.get(file_path),
             ): file_path for file_path in all_files
         }
 
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(all_files), desc="Uploading", unit="file"):
-            success, file_path, err = future.result()
+            success, policy_no, file_id, web_view_link, file_path, extra_meta, err = future.result()
             if success:
                 uploaded += 1
+                upload_results[policy_no] = {
+                    "file_id": file_id,
+                    "web_view_link": web_view_link,
+                    "file_path": file_path,
+                    "company_name": (extra_meta or {}).get("company_name", ""),
+                    "source_name": (extra_meta or {}).get("source_name", ""),
+                }
             else:
                 errors += 1
                 tqdm.write(f"❌ {file_path}: {err}")
 
     end_time = time.time()
-    duration = end_time - start_time
     print("\n☁️  UPLOAD SELESAI!")
     print(f"✅ Uploaded : {uploaded}")
     if errors:
         print(f"❌ Errors   : {errors}")
-    print(f"⏱️  Duration : {duration:.2f} seconds")
+    print(f"⏱️  Duration : {end_time - start_time:.2f} seconds")
+
+    return upload_results
