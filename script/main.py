@@ -105,10 +105,10 @@ def main():
     # =========================
     CONVERT_FOLDER = os.path.join(BASE_DIR, "convert_csv")
     OUTPUT_FOLDER = os.path.join(BASE_DIR, "output")
-    DRIVE_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
-    MASTER_SPREADSHEET_ID = os.environ["MASTER_SPREADSHEET_ID"]
-    MASTER_SHEET_NAME = os.environ.get("MASTER_SHEET_NAME", "2026")
-    CLIENT_SECRET_FILE = os.path.join(BASE_DIR, os.environ["GOOGLE_OAUTH_CLIENT_SECRET"])
+    DRIVE_FOLDER_ID = os.environ["GOOGLE_DRIVE_FOLDER_ID"].strip()
+    MASTER_SPREADSHEET_ID = os.environ["MASTER_SPREADSHEET_ID"].strip()
+    MASTER_SHEET_NAME = os.environ.get("MASTER_SHEET_NAME", "2026").strip()
+    CLIENT_SECRET_FILE = os.path.join(BASE_DIR, os.environ["GOOGLE_OAUTH_CLIENT_SECRET"].strip())
     TOKEN_FILE = os.path.join(BASE_DIR, "token.json")
 
     # =========================
