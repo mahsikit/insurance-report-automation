@@ -32,34 +32,6 @@ def _validate_env():
         sys.exit(1)
 
 
-def _find_files_for_period(output_folder, period):
-    """Walk output/ and return an upload_results-shaped dict for the given period.
-
-    Matches files whose name contains the period string, e.g. "Mei 2026".
-    Derives policy_no, company_name, source_name from the folder structure:
-      output/<source_name>/<company_name>/<policy_no>/<filename>.xlsx
-    """
-    results = {}
-    for root, _, files in os.walk(output_folder):
-        for fname in files:
-            if not fname.endswith(".xlsx") or period not in fname:
-                continue
-            file_path = os.path.join(root, fname)
-            rel = os.path.relpath(file_path, output_folder)
-            parts = rel.split(os.sep)
-            if len(parts) < 4:
-                continue
-            source_name, company_name, policy_no = parts[0], parts[1], parts[2]
-            results[policy_no] = {
-                "file_path": file_path,
-                "company_name": company_name,
-                "source_name": source_name,
-                "file_id": "",
-                "web_view_link": "",
-            }
-    return results
-
-
 def main():
     _validate_env()
 
@@ -83,21 +55,6 @@ def main():
         type=str,
         help="Comma-separated list of policy numbers to filter (e.g. 'POL123,POL456').",
     )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview email plan without sending. Upload and sheet update still run.",
-    )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="Skip the interactive send-confirmation prompt (for non-TTY / CI environments).",
-    )
-    parser.add_argument(
-        "--email-only",
-        action="store_true",
-        help="Skip fetch/process/upload — read existing output/ files and send emails only.",
-    )
     args = parser.parse_args()
 
     # =========================
@@ -118,26 +75,10 @@ def main():
     from fetch import fetch_from_metabase, _as_of_value
     from process import process_join
     from upload import upload_output
-    from sheets import update_master_sheet, read_recipients
-    from email_sender import send_reports
+    from sheets import update_master_sheet
 
     # Authenticate once — shared by Drive, Sheets, Gmail
     creds = get_credentials(CLIENT_SECRET_FILE, TOKEN_FILE)
-
-    # =========================
-    # EMAIL-ONLY MODE
-    # =========================
-    if args.email_only:
-        upload_results = _find_files_for_period(OUTPUT_FOLDER, args.period)
-        if not upload_results:
-            print(f"❌ No files found in output/ for period '{args.period}'.")
-            print("   Run the full pipeline first (without --email-only).")
-            return 1
-        print(f"📂 Found {len(upload_results)} file(s) for '{args.period}' in output/")
-        recipient_map = read_recipients(creds, MASTER_SPREADSHEET_ID, MASTER_SHEET_NAME)
-        send_reports(creds, upload_results, recipient_map, period=args.period,
-                     dry_run=args.dry_run, assume_yes=args.yes)
-        return 0
 
     # =========================
     # FULL PIPELINE
@@ -155,9 +96,7 @@ def main():
 
     if upload_results:
         as_of = _as_of_value(args.period)
-        recipient_map = update_master_sheet(creds, MASTER_SPREADSHEET_ID, MASTER_SHEET_NAME, upload_results, as_of)
-        send_reports(creds, upload_results, recipient_map, period=args.period,
-                     dry_run=args.dry_run, assume_yes=args.yes)
+        update_master_sheet(creds, MASTER_SPREADSHEET_ID, MASTER_SHEET_NAME, upload_results, as_of)
 
     return 0
 
