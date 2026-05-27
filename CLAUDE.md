@@ -7,8 +7,9 @@ one `.xlsx` file with two sheets:
 - **CR** — claim ratio summary row (premiums, loss ratios, insured counts)
 - **Query_result** or **Benefit** — raw claim line-items or benefit-level data
 
-Reports are uploaded to Google Drive, the master tracking sheet is updated, and
-recipients receive the reports by email — all automatically.
+Reports are uploaded to Google Drive and the master tracking sheet is updated automatically.
+Email sending has been removed from this pipeline — it will be handled by a Google Apps Script
+triggered from the master spreadsheet.
 
 ---
 
@@ -22,9 +23,7 @@ satria_data_report/
 │   ├── fetch.py         # Pulls data from Metabase (question + dashboard APIs)
 │   ├── process.py       # Joins CR + claim data, writes one Excel per policy
 │   ├── upload.py        # Uploads output folder tree to Google Drive
-│   ├── sheets.py        # Updates master tracking sheet (columns D, E); reads recipients (F, G)
-│   ├── email_sender.py  # Sends grouped emails via Gmail API; templates at top of file
-│   └── convert.py       # Legacy: manual xlsx→csv converter (kept as fallback)
+│   └── sheets.py        # Updates master tracking sheet (columns D, E)
 ├── convert_csv/         # Intermediate CSVs written by fetch.py (gitignored)
 ├── output/              # Final reports, nested by broker/company/policy (gitignored)
 ├── .env                 # Real credentials (gitignored)
@@ -48,15 +47,35 @@ main.py
                     Report Claim - <PERIOD> - <COMPANY>_<POLICY>.xlsx
   └─ upload.py  → Google Drive folder (same subfolder structure)
   └─ sheets.py  → master spreadsheet columns D (Drive link) + E (as_of)
-                  reads columns F (To) + G (Cc) for recipient map
-  └─ email_sender.py → one email per To/Cc group, .xlsx files attached
+                  ← pipeline ends here
 ```
+
+Email delivery is out of scope for this pipeline. The master spreadsheet (column D = Drive link,
+column E = as_of) is the handoff point for a Google Apps Script that handles sending.
+
+---
+
+## Automation (Gitea Actions)
+
+Workflow file: `.github/workflows/report_automation.yml`
+
+**Scheduled run:** every 5th of the month at 08:00 WIB (01:00 UTC).
+The period is auto-derived as the previous calendar month
+(e.g. workflow fires on June 5 → period = "Mei 2026").
+
+**Manual trigger (`workflow_dispatch`) inputs:**
+
+| Input | Default | Description |
+|---|---|---|
+| `period` | previous month | Override period in Indonesian format (e.g. `Mei 2026`) |
+| `use_benefit` | false | Use benefit-level dashboard instead of claim-level |
+| `manual_policies` | blank (all) | Comma-separated policy numbers to filter |
 
 ---
 
 ## auth.py
 
-Wraps `InstalledAppFlow` with `token.json` caching. Scopes: Drive, Sheets, Gmail send.
+Wraps `InstalledAppFlow` with `token.json` caching. Scopes: Drive, Sheets.
 On first run a browser window opens for consent; subsequent runs refresh silently.
 
 `GOOGLE_LOGIN_HINT` env var (optional) pre-fills the Google account in the browser.
@@ -122,41 +141,30 @@ Three data sources, all via the Metabase REST API. CR and dashboard are fetched
 - Matches rows by **column H** (policy_no); uses first occurrence only (duplicates are skipped)
 - Row 1 is always the header — skipped by row number, not by string match
 - Batch-updates **column D** (Drive `webViewLink`) and **column E** (`as_of` in `YYYY-MM` form) for matched rows
-- Returns `dict[policy_no] → {"to": [str], "cc": [str]}` built from columns F and G (multiple addresses separated by `,` or `;`)
 
 **Column layout (load-bearing — sheet must not be reorganised):**
 
 | Column | Content |
 |---|---|
 | H | policy_no (match key) |
-| F | To addresses |
-| G | Cc addresses |
 | D | Drive link (written by pipeline) |
 | E | Latest As Of (written by pipeline) |
-
----
-
-## email_sender.py
-
-- Groups upload results by normalised `(to, cc)` tuple — policies sharing the same recipients are combined into one email with multiple attachments
-- `SUBJECT_TEMPLATE` / `BODY_TEMPLATE` constants at the top of the file are the canonical place to edit email content; placeholders: `{marketing_name}`, `{company_name}`, `{source_name}`, `{period}`, `{company_list}`
-- `_derive_name(email)` extracts a display name from the email local part (e.g. `"jonathan.santoso@…"` → `"Jonathan Santoso"`)
-- **`dry_run=True`**: prints the send plan (To, Cc, subject, attachment count) without calling Gmail
-- **`assume_yes=True`**: skips the interactive confirmation prompt (required for non-TTY / CI runs)
-- In interactive mode: prints the full plan, then prompts `Send N emails? [y/N]` once before sending
+| F | To addresses (read by Google Apps Script for email) |
+| G | Cc addresses (read by Google Apps Script for email) |
 
 ---
 
 ## Configuration
 
 ### `REPORT_PERIOD`
-Passed via `--period "Mei 2026"`. Defaults to the current month.
+Passed via `--period "Mei 2026"`. Defaults to the previous month when run via cron;
+defaults to the current month when run locally without `--period`.
 
 Controls:
 - The `As_Of` filter sent to CR card (`2026-05`)
 - The `claim_date` filter sent to the dashboard (`~2026-06-01`)
 - The `As_Of` filter sent to the active policy card (`2026-05-31`)
-- The report filename and email subject
+- The report filename
 
 ### `.env` variables
 
@@ -211,15 +219,6 @@ python3 script/main.py --policy "POL-12345,POL-98765"
 python3 script/main.py --benefit
 ```
 
-### Safe runs
-```bash
-# Preview what would be emailed without sending
-python3 script/main.py --period "Mei 2026" --dry-run
-
-# Skip confirmation prompt (non-interactive / CI)
-python3 script/main.py --yes
-```
-
 ---
 
 ## Key design decisions
@@ -233,5 +232,7 @@ python3 script/main.py --yes
 - **Active policy filter is optional** — if `METABASE_ACTIVE_POLICY_CARD_ID` is unset, both the CR card and dashboard return all policies unfiltered.
 - **Skipped policies** — a policy in the CR snapshot with zero matching claim rows in the dashboard data is skipped.
 - **Sheets A:H read** — reading from column A (not F or H) prevents the Sheets API from trimming leading empty rows in the response, which would shift all row indices and write to the wrong cells.
-- **First-occurrence dedup** — if a policy_no appears in multiple sheet rows, only the first is used. This prevents a duplicate entry from silently capturing the email send.
-- **PII / production** — data is patient insurance claims (PII). Pipeline runs locally on demand. Do not use GitHub-hosted Actions runners as data would transit Microsoft/GitHub infrastructure. Use a self-hosted runner or a local cron job if automation is needed.
+- **First-occurrence dedup** — if a policy_no appears in multiple sheet rows, only the first is used.
+- **Strip env vars** — all path-critical env vars (spreadsheet ID, sheet name, Drive folder ID, client secret filename) are `.strip()`-ed at read time to guard against trailing newlines in Gitea secrets.
+- **Email out of scope** — email delivery is intentionally not in this pipeline. The master sheet (columns D + E) is the handoff point; a Google Apps Script reads columns F/G for recipients and sends from there.
+- **PII / production** — data is patient insurance claims (PII). Pipeline runs on a self-hosted Gitea runner. Do not use GitHub-hosted Actions runners as data would transit Microsoft/GitHub infrastructure.
