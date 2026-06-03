@@ -7,9 +7,8 @@ one `.xlsx` file with two sheets:
 - **CR** — claim ratio summary row (premiums, loss ratios, insured counts)
 - **Query_result** or **Benefit** — raw claim line-items or benefit-level data
 
-Reports are uploaded to Google Drive and the master tracking sheet is updated automatically.
-Email sending has been removed from this pipeline — it will be handled by a Google Apps Script
-triggered from the master spreadsheet.
+Reports are uploaded to Google Drive, the master tracking sheet is updated, and Gmail drafts
+are created ready for review and manual sending.
 
 ---
 
@@ -23,7 +22,8 @@ satria_data_report/
 │   ├── fetch.py         # Pulls data from Metabase (question + dashboard APIs)
 │   ├── process.py       # Joins CR + claim data, writes one Excel per policy
 │   ├── upload.py        # Uploads output folder tree to Google Drive
-│   └── sheets.py        # Updates master tracking sheet (columns D, E)
+│   ├── sheets.py        # Updates master tracking sheet (columns D, E)
+│   └── drafts.py        # Creates Gmail drafts with Excel attachments
 ├── convert_csv/         # Intermediate CSVs written by fetch.py (gitignored)
 ├── output/              # Final reports, nested by broker/company/policy (gitignored)
 ├── .env                 # Real credentials (gitignored)
@@ -47,11 +47,10 @@ main.py
                     Report Claim - <PERIOD> - <COMPANY>_<POLICY>.xlsx
   └─ upload.py  → Google Drive folder (same subfolder structure)
   └─ sheets.py  → master spreadsheet columns D (Drive link) + E (as_of)
+                  returns recipient_map (columns F + G)
+  └─ drafts.py  → Gmail drafts (one per unique To+Cc+source_name group)
                   ← pipeline ends here
 ```
-
-Email delivery is out of scope for this pipeline. The master spreadsheet (column D = Drive link,
-column E = as_of) is the handoff point for a Google Apps Script that handles sending.
 
 ---
 
@@ -75,10 +74,14 @@ The period is auto-derived as the previous calendar month
 
 ## auth.py
 
-Wraps `InstalledAppFlow` with `token.json` caching. Scopes: Drive, Sheets.
+Wraps `InstalledAppFlow` with `token.json` caching. Scopes: Drive, Sheets, Gmail Compose.
 On first run a browser window opens for consent; subsequent runs refresh silently.
 
 `GOOGLE_LOGIN_HINT` env var (optional) pre-fills the Google account in the browser.
+
+> **Scope change note:** scope was changed from `gmail.send` to `gmail.compose` when draft
+> creation was added. If `token.json` was generated with the old scope, delete it and
+> re-run `python3 -c "import os; from dotenv import load_dotenv; load_dotenv('.env'); from script.auth import get_credentials; get_credentials(os.environ['GOOGLE_OAUTH_CLIENT_SECRET'], 'token.json')"` locally, then update the `TOKEN_JSON` Gitea secret.
 
 ---
 
@@ -141,6 +144,7 @@ Three data sources, all via the Metabase REST API. CR and dashboard are fetched
 - Matches rows by **column H** (policy_no); uses first occurrence only (duplicates are skipped)
 - Row 1 is always the header — skipped by row number, not by string match
 - Batch-updates **column D** (Drive `webViewLink`) and **column E** (`as_of` in `YYYY-MM` form) for matched rows
+- Returns `dict[policy_no] → {"to": [str], "cc": [str]}` built from columns F and G — passed directly to `drafts.py`
 
 **Column layout (load-bearing — sheet must not be reorganised):**
 
@@ -149,8 +153,22 @@ Three data sources, all via the Metabase REST API. CR and dashboard are fetched
 | H | policy_no (match key) |
 | D | Drive link (written by pipeline) |
 | E | Latest As Of (written by pipeline) |
-| F | To addresses (read by Google Apps Script for email) |
-| G | Cc addresses (read by Google Apps Script for email) |
+| F | To addresses (read by pipeline for draft creation) |
+| G | Cc addresses (read by pipeline for draft creation) |
+
+---
+
+## drafts.py
+
+- Receives `recipient_map` (from `sheets.py`) and `upload_results` (from `upload.py`)
+- Groups policies by **unique `(To, Cc, source_name)` combination** — same recipients but different `source_name` always produce separate drafts
+- Each draft has:
+  - **Subject:** `Laporan Klaim <period> - <company> (<source_name>)`
+  - **Body:** list of Drive links per policy
+  - **Attachments:** the `.xlsx` file for each policy in the group attached directly
+- Skips policies with no To addresses in the master sheet (warns in output)
+- Uses `gmail.compose` scope — drafts sit in the sender's Gmail inbox, ready for manual review and send
+- Gmail's 25 MB per-message limit applies to total attachment size
 
 ---
 
@@ -234,5 +252,5 @@ python3 script/main.py --benefit
 - **Sheets A:H read** — reading from column A (not F or H) prevents the Sheets API from trimming leading empty rows in the response, which would shift all row indices and write to the wrong cells.
 - **First-occurrence dedup** — if a policy_no appears in multiple sheet rows, only the first is used.
 - **Strip env vars** — all path-critical env vars (spreadsheet ID, sheet name, Drive folder ID, client secret filename) are `.strip()`-ed at read time to guard against trailing newlines in Gitea secrets.
-- **Email out of scope** — email delivery is intentionally not in this pipeline. The master sheet (columns D + E) is the handoff point; a Google Apps Script reads columns F/G for recipients and sends from there.
+- **Gmail drafts, not auto-send** — the pipeline creates drafts (not sends) so each report run can be reviewed before delivery. Recipients come from master sheet columns F/G. Drafts are grouped by `(To, Cc, source_name)` so different data sources never get bundled into one email.
 - **PII / production** — data is patient insurance claims (PII). Pipeline runs on a self-hosted Gitea runner. Do not use GitHub-hosted Actions runners as data would transit Microsoft/GitHub infrastructure.
