@@ -75,7 +75,7 @@ jobs:
           MASTER_SPREADSHEET_ID: ${{ secrets.MASTER_SPREADSHEET_ID }}
           MASTER_SHEET_NAME: ${{ secrets.MASTER_SHEET_NAME }}
         run: |
-          ARGS="--period '${{ steps.period.outputs.value }}' --yes"
+          ARGS="--period '${{ steps.period.outputs.value }}'"
 
           if [ "${{ github.event.inputs.use_benefit }}" == "true" ]; then
             ARGS="$ARGS --benefit"
