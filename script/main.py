@@ -76,6 +76,7 @@ def main():
     from process import process_join
     from upload import upload_output
     from sheets import update_master_sheet
+    from drafts import create_drafts
 
     # Authenticate once — shared by Drive, Sheets, Gmail
     creds = get_credentials(CLIENT_SECRET_FILE, TOKEN_FILE)
@@ -96,7 +97,9 @@ def main():
 
     if upload_results:
         as_of = _as_of_value(args.period)
-        update_master_sheet(creds, MASTER_SPREADSHEET_ID, MASTER_SHEET_NAME, upload_results, as_of)
+        recipient_map = update_master_sheet(creds, MASTER_SPREADSHEET_ID, MASTER_SHEET_NAME, upload_results, as_of)
+        if recipient_map:
+            create_drafts(creds, recipient_map, upload_results, args.period)
 
     return 0
 
