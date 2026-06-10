@@ -68,15 +68,6 @@ def _write_policy(policy, df_cr_filtered, df_data_filtered, output_folder, data_
         df_cr_filtered.to_excel(writer, sheet_name="CR", index=False)
         df_data_out.to_excel(writer, sheet_name=data_sheet, index=False)
 
-        # Add SUM row at the bottom of the 'approved' column in the data sheet
-        if "approved" in df_data_out.columns:
-            from xlsxwriter.utility import xl_col_to_name
-            ws = writer.sheets[data_sheet]
-            col_idx = df_data_out.columns.tolist().index("approved")
-            col_letter = xl_col_to_name(col_idx)
-            n_data = len(df_data_out)
-            # Row 0 = header, rows 1..n_data = data, sum goes on row n_data+1 (0-based)
-            ws.write_formula(n_data + 1, col_idx, f"=SUM({col_letter}2:{col_letter}{n_data + 1})")
 
     # Pull effective/renewal dates from the CR row for email table
     cr_row = df_cr_filtered.iloc[0]
