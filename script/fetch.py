@@ -38,11 +38,15 @@ def _claim_before_date(report_period):
 
 
 def _as_of_value(report_period):
-    """'Mei 2026' → '2026-05'  (Metabase date/month-year filter for As_Of)"""
+    """'Juni 2026' → '2026-05'  (As_Of = previous month of report period)"""
     parts = report_period.strip().split()
     month = INDONESIAN_MONTHS[parts[0].lower()]
     year = int(parts[1])
-    return f"{year:04d}-{month:02d}"
+    if month == 1:
+        prev_month, prev_year = 12, year - 1
+    else:
+        prev_month, prev_year = month - 1, year
+    return f"{prev_year:04d}-{prev_month:02d}"
 
 
 def _as_of_last_day_value(report_period):
