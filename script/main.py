@@ -17,9 +17,7 @@ def get_default_period():
     months = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
               "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
     now = datetime.datetime.now()
-    # Default to previous month (matches cron behaviour)
-    prev = now.replace(day=1) - datetime.timedelta(days=1)
-    return f"{months[prev.month - 1]} {prev.year}"
+    return f"{months[now.month - 1]} {now.year}"
 
 
 def _validate_env():

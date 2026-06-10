@@ -45,8 +45,7 @@ jobs:
           import datetime
           months = ['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember']
           today = datetime.date.today()
-          prev = (today.replace(day=1) - datetime.timedelta(days=1))
-          print(f'{months[prev.month-1]} {prev.year}')
+          print(f'{months[today.month-1]} {today.year}')
           ")" >> $GITHUB_OUTPUT
           fi
 
