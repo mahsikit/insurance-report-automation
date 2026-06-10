@@ -4,6 +4,8 @@ import re
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from fetch import CR_FILENAME, QUERY_FILENAME, BENEFIT_FILENAME
+
 
 CR_NUMERIC = [
     "gross_written_premium_before_disc", "gross_earned_premium_before_disc",
@@ -18,22 +20,6 @@ def _apply_numeric(df, cols):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
-
-
-def _detect_files(convert_folder):
-    """Identify the CR and query CSV files by their column headers."""
-    cr_file = None
-    data_file = None
-    for fname in os.listdir(convert_folder):
-        if not fname.endswith(".csv"):
-            continue
-        path = os.path.join(convert_folder, fname)
-        header = pd.read_csv(path, nrows=0).columns.tolist()
-        if "Loss Ratio by GWP before Disc" in header or "gross_written_premium_before_disc" in header:
-            cr_file = fname
-        elif "claims_id" in header:
-            data_file = fname
-    return cr_file, data_file
 
 
 def broker_folder(source_name):
@@ -66,51 +52,105 @@ def _write_policy(policy, df_cr_filtered, df_data_filtered, output_folder, data_
         df_cr_filtered.to_excel(writer, sheet_name="CR", index=False)
         df_data_filtered.to_excel(writer, sheet_name=data_sheet, index=False)
 
-    return {"file_path": output_path, "policy_no": policy,
-            "company_name": company_name, "source_name": str(source_name).strip()}
+    # Pull effective/renewal dates from the CR row for email table
+    cr_row = df_cr_filtered.iloc[0]
+    effective_date = str(cr_row.get('policy_effective_date', '')) if 'policy_effective_date' in df_cr_filtered.columns else ''
+    renewal_date = str(cr_row.get('policy_renewal_date', '')) if 'policy_renewal_date' in df_cr_filtered.columns else ''
+
+    return {
+        "file_path": output_path,
+        "policy_no": policy,
+        "company_name": company_name,
+        "source_name": str(source_name).strip(),
+        "policy_effective_date": effective_date,
+        "policy_renewal_date": renewal_date,
+    }
 
 
-def process_join(convert_folder, output_folder, use_benefit=False, report_period="Mei 2026"):
-    mode_label = "BENEFIT LEVEL" if use_benefit else "CLAIM LEVEL"
-    print(f"🚀 START PROCESSING CSV (PER POLICY) — {mode_label}\n")
+def process_join(convert_folder, output_folder, master, report_period="Mei 2026"):
+    """Write one Excel file per policy, routing each to the correct data source.
 
-    cr_file, data_file = _detect_files(convert_folder)
+    Args:
+        master: dict[policy_no] → {"need_report": "detail"|"header", ...}
+                from sheets.read_master().  Used to decide which CSV to join per policy.
+    """
+    print(f"🚀 START PROCESSING CSV (PER POLICY)\n")
 
-    if not cr_file or not data_file:
-        print("❌ File CR atau Query Result tidak ditemukan!")
-        return
+    # Load CR (always present)
+    cr_path = os.path.join(convert_folder, CR_FILENAME)
+    if not os.path.exists(cr_path):
+        print("❌ File CR tidak ditemukan!")
+        return []
 
     df_cr = _apply_numeric(
-        pd.read_csv(os.path.join(convert_folder, cr_file), dtype=str),
+        pd.read_csv(cr_path, dtype=str),
         CR_NUMERIC,
     )
-    df_data = _apply_numeric(
-        pd.read_csv(os.path.join(convert_folder, data_file), dtype=str),
-        QUERY_NUMERIC,
-    )
-
     df_cr['policy_no'] = df_cr['policy_no'].str.strip()
-    df_data['policy_no'] = df_data['policy_no'].str.strip()
+
+    # Load claim (header) data — dashboard 48 output
+    query_path = os.path.join(convert_folder, QUERY_FILENAME)
+    df_query = None
+    grouped_query = None
+    if os.path.exists(query_path):
+        df_query = _apply_numeric(
+            pd.read_csv(query_path, dtype=str),
+            QUERY_NUMERIC,
+        )
+        df_query['policy_no'] = df_query['policy_no'].str.strip()
+        grouped_query = df_query.groupby('policy_no')
+
+    # Load benefit (detail) data — dashboard 38 output
+    benefit_path = os.path.join(convert_folder, BENEFIT_FILENAME)
+    df_benefit = None
+    grouped_benefit = None
+    if os.path.exists(benefit_path):
+        df_benefit = _apply_numeric(
+            pd.read_csv(benefit_path, dtype=str),
+            QUERY_NUMERIC,
+        )
+        df_benefit['policy_no'] = df_benefit['policy_no'].str.strip()
+        grouped_benefit = df_benefit.groupby('policy_no')
 
     policies = df_cr['policy_no'].dropna().unique()
-    grouped_data = df_data.groupby('policy_no')
-    data_sheet = "Benefit" if use_benefit else "Query_result"
 
     os.makedirs(output_folder, exist_ok=True)
 
-    # Split policies into writable tasks vs skips up front
+    # Build tasks, routing each policy to the correct data source
     tasks = {}
     skipped = 0
-    for policy in policies:
-        if policy not in grouped_data.groups:
-            skipped += 1
-            continue
-        tasks[policy] = (
-            df_cr[df_cr['policy_no'] == policy],
-            grouped_data.get_group(policy),
-        )
+    skipped_reasons = []
 
-    print(f"📊 Total policy: {len(policies)}  |  To write: {len(tasks)}  |  Skipped: {skipped}\n")
+    for policy in policies:
+        need_report = master.get(policy, {}).get("need_report", "")
+
+        if need_report == "detail":
+            if grouped_benefit is None or policy not in grouped_benefit.groups:
+                skipped += 1
+                skipped_reasons.append(f"{policy} (detail — no benefit rows)")
+                continue
+            tasks[policy] = (
+                df_cr[df_cr['policy_no'] == policy],
+                grouped_benefit.get_group(policy),
+                "Benefit",
+            )
+        elif need_report == "header":
+            if grouped_query is None or policy not in grouped_query.groups:
+                skipped += 1
+                skipped_reasons.append(f"{policy} (header — no query rows)")
+                continue
+            tasks[policy] = (
+                df_cr[df_cr['policy_no'] == policy],
+                grouped_query.get_group(policy),
+                "Query_result",
+            )
+        else:
+            # Policy is in CR but not in master sheet (or no routing value) → skip
+            skipped += 1
+            skipped_reasons.append(f"{policy} (not in master / no routing)")
+            continue
+
+    print(f"📊 Total policy (CR): {len(policies)}  |  To write: {len(tasks)}  |  Skipped: {skipped}\n")
 
     success = 0
     errors = 0
@@ -118,8 +158,10 @@ def process_join(convert_folder, output_folder, use_benefit=False, report_period
 
     with ThreadPoolExecutor(max_workers=8) as executor:
         futures = {
-            executor.submit(_write_policy, policy, cr_slice, data_slice, output_folder, data_sheet, report_period): policy
-            for policy, (cr_slice, data_slice) in tasks.items()
+            executor.submit(
+                _write_policy, policy, cr_slice, data_slice, output_folder, data_sheet, report_period
+            ): policy
+            for policy, (cr_slice, data_slice, data_sheet) in tasks.items()
         }
         with tqdm(total=len(futures), desc="Writing", unit="policy") as pbar:
             for future in as_completed(futures):

@@ -4,7 +4,8 @@ import calendar
 from concurrent.futures import ThreadPoolExecutor
 
 CR_FILENAME = "claim_ratio_CR.csv"
-QUERY_FILENAME = "query_result_Query_result.csv"
+QUERY_FILENAME = "query_result_Query_result.csv"   # dashboard 48 (claim history)
+BENEFIT_FILENAME = "query_result_Benefit.csv"      # dashboard 38 (benefit detail)
 
 INDONESIAN_MONTHS = {
     "januari": 1, "februari": 2, "maret": 3, "april": 4,
@@ -53,26 +54,23 @@ def _as_of_last_day_value(report_period):
     return f"{year:04d}-{month:02d}-{last_day:02d}"
 
 
-def _fetch_active_policy_nos(base_url, headers, card_id, as_of_date):
-    """Fetch the active policy list from a saved question → list of policy_no strings."""
-    card = requests.get(
-        f"{base_url}/api/card/{card_id}",
-        headers=headers,
-        timeout=30,
-    ).json()
+def fetch_active_policies_full(base_url, headers, card_id, as_of_date):
+    """Fetch active policy list from card 732 → list of dicts.
+
+    Each dict contains at minimum: policy_no, company_name,
+    policy_effective_date, policy_renewal_date.
+    """
+    import csv as _csv
+    import io as _io
+
+    card = requests.get(f"{base_url}/api/card/{card_id}", headers=headers, timeout=30).json()
 
     params_payload = []
     for param in card.get("parameters", []):
-        slug = param.get("slug", "")
-        param_id = param["id"]
-        param_type = param.get("type", "")
-        target = param.get("target")
-
-        # The user mentioned 'As_of' but we'll accept 'As_Of' too to be safe
-        if slug.lower() == "as_of":
-            entry = {"id": param_id, "type": param_type, "value": as_of_date}
-            if target:
-                entry["target"] = target
+        if param.get("slug", "").lower() == "as_of":
+            entry = {"id": param["id"], "type": param.get("type", ""), "value": as_of_date}
+            if param.get("target"):
+                entry["target"] = param["target"]
             params_payload.append(entry)
 
     resp = requests.post(
@@ -82,16 +80,7 @@ def _fetch_active_policy_nos(base_url, headers, card_id, as_of_date):
         timeout=60,
     )
     resp.raise_for_status()
-    lines = resp.text.strip().splitlines()
-    if len(lines) < 2:
-        return []
-    # Find the policy_no column
-    col_headers = lines[0].split(",")
-    try:
-        idx = col_headers.index("policy_no")
-    except ValueError:
-        raise ValueError(f"Card {card_id} has no 'policy_no' column. Columns: {col_headers}")
-    return [line.split(",")[idx].strip() for line in lines[1:] if line.strip()]
+    return list(_csv.DictReader(_io.StringIO(resp.text)))
 
 
 def _fetch_cr_csv(base_url, headers, card_id, as_of, policy_nos=None):
@@ -198,18 +187,25 @@ def _fetch_dashboard_csv(base_url, headers, dashboard_id, claim_before_date, pol
     return resp.text
 
 
-def fetch_from_metabase(convert_folder, use_benefit=False, report_period="Mei 2026", manual_policies=None):
+def fetch_from_metabase(convert_folder, report_period,
+                        header_policies=None, detail_policies=None):
+    """Fetch CR data plus two dashboard CSVs (one per routing group).
+
+    Args:
+        header_policies: list of policy_no routed to dashboard 48 (claim history).
+                         Pass None to skip that fetch.
+        detail_policies: list of policy_no routed to dashboard 38 (benefit detail).
+                         Pass None to skip that fetch.
+
+    The combined set of all policies is sent to the CR card so the summary sheet
+    contains rows for every policy regardless of routing.
+    """
     base_url = _require_env("METABASE_URL").rstrip("/")
     user = _require_env("METABASE_USER")
     password = _require_env("METABASE_PASSWORD")
     cr_card_id = _require_env("METABASE_CR_CARD_ID")
-
-    if use_benefit:
-        query_dashboard_id = _require_env("METABASE_BENEFIT_CARD_ID")
-        query_label = "Benefit Level"
-    else:
-        query_dashboard_id = _require_env("METABASE_QUERY_CARD_ID")
-        query_label = "Query Result (Claim Level)"
+    claim_dash_id = _require_env("METABASE_QUERY_CARD_ID")      # dashboard 48
+    benefit_dash_id = _require_env("METABASE_BENEFIT_CARD_ID")  # dashboard 38
 
     claim_before = _claim_before_date(report_period)
     as_of = _as_of_value(report_period)
@@ -227,41 +223,51 @@ def fetch_from_metabase(convert_folder, use_benefit=False, report_period="Mei 20
 
     session_headers = {"X-Metabase-Session": token}
 
-    active_policy_nos = None
-    if manual_policies:
-        active_policy_nos = manual_policies
-        print(f"📋 Using {len(active_policy_nos)} manually provided policies...\n")
-    else:
-        # Optional: fetch active policy list to filter dashboard results
-        active_policy_card_id = os.environ.get("METABASE_ACTIVE_POLICY_CARD_ID")
-        if active_policy_card_id:
-            as_of_last_day = _as_of_last_day_value(report_period)
-            print(f"📋 Fetching active policy list (card {active_policy_card_id}, As_of={as_of_last_day})...")
-            active_policy_nos = _fetch_active_policy_nos(base_url, session_headers, active_policy_card_id, as_of_last_day)
-            print(f"   ✅ {len(active_policy_nos)} active policies\n")
+    # Combined policy set for CR — every policy that will be written to Excel
+    all_policies = list({*(header_policies or []), *(detail_policies or [])}) or None
 
-    # 1+2. Fetch CR and claim/benefit data in parallel (both depend on active_policy_nos)
-    policy_count_label = f", {len(active_policy_nos)} policies" if active_policy_nos else ""
-    print(f"📥 Fetching CR (card {cr_card_id}, As_Of={as_of}{policy_count_label}) "
-          f"+ {query_label} (dashboard {query_dashboard_id}) in parallel...")
+    label_h = f"{len(header_policies)} header" if header_policies else "none"
+    label_d = f"{len(detail_policies)} detail" if detail_policies else "none"
+    print(f"📥 Fetching CR (card {cr_card_id}, As_Of={as_of}) "
+          f"+ dash48 [{label_h}] + dash38 [{label_d}] in parallel...")
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        future_cr = executor.submit(
-            _fetch_cr_csv, base_url, session_headers, cr_card_id, as_of, active_policy_nos
+    def _fetch_cr():
+        return _fetch_cr_csv(base_url, session_headers, cr_card_id, as_of, all_policies)
+
+    def _fetch_header():
+        if not header_policies:
+            return None
+        return _fetch_dashboard_csv(
+            base_url, session_headers, claim_dash_id, claim_before, header_policies
         )
-        future_dashboard = executor.submit(
-            _fetch_dashboard_csv, base_url, session_headers, query_dashboard_id,
-            claim_before, active_policy_nos
+
+    def _fetch_detail():
+        if not detail_policies:
+            return None
+        return _fetch_dashboard_csv(
+            base_url, session_headers, benefit_dash_id, claim_before, detail_policies
         )
-        cr_csv = future_cr.result()
-        dashboard_csv = future_dashboard.result()
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        f_cr = executor.submit(_fetch_cr)
+        f_header = executor.submit(_fetch_header)
+        f_detail = executor.submit(_fetch_detail)
+        cr_csv = f_cr.result()
+        header_csv = f_header.result()
+        detail_csv = f_detail.result()
 
     with open(os.path.join(convert_folder, CR_FILENAME), "w", encoding="utf-8") as f:
         f.write(cr_csv)
     print(f"   ✅ {CR_FILENAME} ({cr_csv.count(chr(10))} lines)")
 
-    with open(os.path.join(convert_folder, QUERY_FILENAME), "w", encoding="utf-8") as f:
-        f.write(dashboard_csv)
-    print(f"   ✅ {QUERY_FILENAME} ({dashboard_csv.count(chr(10))} lines)\n")
+    if header_csv is not None:
+        with open(os.path.join(convert_folder, QUERY_FILENAME), "w", encoding="utf-8") as f:
+            f.write(header_csv)
+        print(f"   ✅ {QUERY_FILENAME} ({header_csv.count(chr(10))} lines)")
 
-    print("🎯 FETCH SELESAI\n")
+    if detail_csv is not None:
+        with open(os.path.join(convert_folder, BENEFIT_FILENAME), "w", encoding="utf-8") as f:
+            f.write(detail_csv)
+        print(f"   ✅ {BENEFIT_FILENAME} ({detail_csv.count(chr(10))} lines)")
+
+    print("\n🎯 FETCH SELESAI\n")

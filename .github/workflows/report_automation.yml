@@ -10,11 +10,6 @@ on:
         required: false
         default: ''
         type: string
-      use_benefit:
-        description: 'Use Benefit Dashboard instead of Query Result'
-        required: false
-        default: false
-        type: boolean
       manual_policies:
         description: 'Comma-separated policy numbers (optional, leave blank for all)'
         required: false
@@ -77,9 +72,6 @@ jobs:
         run: |
           ARGS="--period '${{ steps.period.outputs.value }}'"
 
-          if [ "${{ github.event.inputs.use_benefit }}" == "true" ]; then
-            ARGS="$ARGS --benefit"
-          fi
           if [ -n "${{ github.event.inputs.manual_policies }}" ]; then
             ARGS="$ARGS --policy '${{ github.event.inputs.manual_policies }}'"
           fi

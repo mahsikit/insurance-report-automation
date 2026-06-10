@@ -2,6 +2,7 @@
 service_account.json
 token.json
 client_secret_*.json
+satria_yudha.json
 __pycache__/
 *.pyc
 .DS_Store

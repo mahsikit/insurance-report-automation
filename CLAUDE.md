@@ -18,18 +18,18 @@ are created ready for review and manual sending.
 satria_data_report/
 ├── script/
 │   ├── main.py          # Entry point — orchestrates the full pipeline
-│   ├── auth.py          # OAuth 2.0 Desktop credential flow + token caching
+│   ├── auth.py          # OAuth 2.0 web-client credential flow + token caching
 │   ├── fetch.py         # Pulls data from Metabase (question + dashboard APIs)
 │   ├── process.py       # Joins CR + claim data, writes one Excel per policy
 │   ├── upload.py        # Uploads output folder tree to Google Drive
-│   ├── sheets.py        # Updates master tracking sheet (columns D, E)
+│   ├── sheets.py        # Syncs master sheet; reads routing + recipients; writes links
 │   └── drafts.py        # Creates Gmail drafts with Excel attachments
 ├── convert_csv/         # Intermediate CSVs written by fetch.py (gitignored)
 ├── output/              # Final reports, nested by broker/company/policy (gitignored)
 ├── .env                 # Real credentials (gitignored)
 ├── .env.example         # Template — copy to .env and fill in
 ├── token.json           # OAuth refresh token, created on first run (gitignored)
-├── client_secret_*.json # OAuth Desktop client secret — gitignored, never commit
+├── satria_yudha.json    # OAuth web-client secret — gitignored, never commit
 ├── .gitignore
 └── requirements.txt
 ```
@@ -38,17 +38,24 @@ satria_data_report/
 
 ## Pipeline
 
+Sheet sync happens **first** — new active policies are added automatically, and column C
+drives per-policy routing to the correct Metabase dashboard.
+
 ```
 main.py
   └─ auth.py    → credentials (OAuth 2.0; token.json cached after first browser consent)
-  └─ fetch.py   → convert_csv/claim_ratio_CR.csv
-                  convert_csv/query_result_Query_result.csv
+  └─ fetch.py   → fetch_active_policies_full() — card 732 active policy list
+  └─ sheets.py  → sync_new_policies() — append any new policies to FINAL tab
+  └─ sheets.py  → read_master() → master dict (policy_no → routing + recipients)
+  └─ [date filter] → exclude policies lapsed > 3 months before report period end
+  └─ fetch.py   → convert_csv/claim_ratio_CR.csv          (all eligible policies)
+                  convert_csv/query_result_Query_result.csv (header policies → dash 48)
+                  convert_csv/query_result_Benefit.csv      (detail policies → dash 38)
   └─ process.py → output/<source_name>/<company_name>/<policy_no>/
                     Report Claim - <PERIOD> - <COMPANY>_<POLICY>.xlsx
   └─ upload.py  → Google Drive folder (same subfolder structure)
-  └─ sheets.py  → master spreadsheet columns D (Drive link) + E (as_of)
-                  returns recipient_map (columns F + G)
-  └─ drafts.py  → Gmail drafts (one per unique To+Cc+source_name group)
+  └─ sheets.py  → write_links() — columns J (Drive link) + K (as_of) on matched rows
+  └─ drafts.py  → Gmail drafts (one per unique To+Cc group)
                   ← pipeline ends here
 ```
 
@@ -67,8 +74,18 @@ The period is auto-derived as the previous calendar month
 | Input | Default | Description |
 |---|---|---|
 | `period` | previous month | Override period in Indonesian format (e.g. `Mei 2026`) |
-| `use_benefit` | false | Use benefit-level dashboard instead of claim-level |
 | `manual_policies` | blank (all) | Comma-separated policy numbers to filter |
+
+**Gitea secrets required** (update when switching accounts):
+
+| Secret | Content |
+|---|---|
+| `OAUTH_CLIENT_SECRET_JSON` | Full contents of `satria_yudha.json` |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Filename: `satria_yudha.json` |
+| `TOKEN_JSON` | Contents of `token.json` generated locally with the satria account |
+
+> The `use_benefit` flag has been removed. Per-policy routing (`detail` vs `header`) is
+> now driven by column C of the FINAL master sheet.
 
 ---
 
@@ -79,95 +96,123 @@ On first run a browser window opens for consent; subsequent runs refresh silentl
 
 `GOOGLE_LOGIN_HINT` env var (optional) pre-fills the Google account in the browser.
 
-> **Scope change note:** scope was changed from `gmail.send` to `gmail.compose` when draft
-> creation was added. If `token.json` was generated with the old scope, delete it and
-> re-run `python3 -c "import os; from dotenv import load_dotenv; load_dotenv('.env'); from script.auth import get_credentials; get_credentials(os.environ['GOOGLE_OAUTH_CLIENT_SECRET'], 'token.json')"` locally, then update the `TOKEN_JSON` Gitea secret.
+**Fixed port:** the local server uses port **8080** so the redirect URI is predictable
+for web-type OAuth clients. Before the first run with `satria_yudha.json`:
+1. Go to Google Cloud Console → APIs & Services → Credentials → the satria client.
+2. Add `http://localhost:8080/` to **Authorized redirect URIs**.
+3. Delete `token.json` so the consent flow re-runs as the satria account.
+4. After consent succeeds locally, copy the new `token.json` contents to the `TOKEN_JSON`
+   Gitea secret so the runner can authenticate without a browser.
 
 ---
 
 ## fetch.py
 
-Three data sources, all via the Metabase REST API. CR and dashboard are fetched
-**in parallel** using `ThreadPoolExecutor`.
+Four Metabase API calls, three of which run in parallel.
 
-| Data | Source | API |
+| Function | Source | Purpose |
 |---|---|---|
-| Claim Ratio (CR) | Saved question `/question/552` | `POST /api/card/:id/query/csv` with parameters |
-| Claim / Benefit raw data | Dashboard 48 or 38 | `POST /api/dashboard/:id/dashcard/:dc/card/:c/query/csv` |
-| Active policy list | Saved question `/question/732` | `POST /api/card/:id/query/csv` with `As_Of` filter (last day of month) |
+| `fetch_active_policies_full()` | Card 732 | Full active policy list for sheet sync |
+| `_fetch_cr_csv()` | Card 552 | CR summary (all eligible policies) |
+| `_fetch_dashboard_csv()` × 2 | Dashboard 48 + 38 | Claim / benefit data (parallel) |
 
 **Auth:** username/password session — `POST /api/session` → `X-Metabase-Session` header.
 
+**Card 732 columns returned:** `policy_no`, `company_name`, `policy_effective_date`,
+`policy_renewal_date`, `source_name`.
+
 **CR fetch flow (card 552):**
-1. `GET /api/card/552` — introspects the card's `parameters` list to discover each param's `id`, `type`, `target`, and `slug`
-2. Builds `As_Of` filter = `YYYY-MM` derived from `REPORT_PERIOD` (e.g. `"2026-05"` for "Mei 2026") — collapses full history to one snapshot row per policy for the month
-3. Optionally builds `policy_no` filter from the active policy list (card 732)
-4. Matches parameters by `slug` (not `name`) — slug is `"As_Of"`, display name is `"As Of"`
+1. `GET /api/card/552` — introspects `parameters` to discover `id`, `type`, `target`, `slug`
+2. Builds `As_Of` filter = `YYYY-MM` derived from `REPORT_PERIOD`
+3. Sends combined policy list (header + detail) as `policy_no` filter
+4. Matches parameters by `slug` (`"As_Of"`) not display name (`"As Of"`)
 
 **Dashboard fetch flow (dashboards 48 / 38):**
-1. `GET /api/dashboard/:id` — auto-discovers the main dashcard ID, card ID, and parameter definitions
-2. Builds `claim_date` filter = first day of next month with `~` prefix (e.g. `~2026-06-01` for "Mei 2026") — Metabase interprets this as "before that date", covering all of May
-3. Builds `is_aso=false` filter — excludes ASO policies
-4. Optionally builds `policy_no` filter from the active policy list
-5. POSTs all parameters to get filtered CSV
+1. `GET /api/dashboard/:id` — auto-discovers dashcard ID, card ID, parameter definitions
+2. Builds `claim_date` = first day of next month with `~` prefix (e.g. `~2026-06-01`)
+3. Builds `is_aso=false` filter
+4. Sends the respective policy list (header or detail) as `policy_no` filter
+5. Skipped entirely if the policy set is empty
 
 ---
 
 ## process.py
 
-- Reads the two CSVs from `convert_csv/`, detects which is which by column headers
-  (`Loss Ratio by GWP before Disc` or `gross_written_premium_before_disc` → CR file; `claims_id` → query/benefit file)
+- Reads CR CSV plus whichever of `Query_result` / `Benefit` CSVs exist in `convert_csv/`
+- Per-policy routing from `master` (column C): `detail` → `Benefit` sheet (dash 38 data),
+  `header` → `Query_result` sheet (dash 48 data)
 - Keeps all columns as `str` on read (preserves leading zeros on IDs like `nik`, `card_no`)
 - Converts known money/count columns to numeric after load (`CR_NUMERIC`, `QUERY_NUMERIC`)
 - Writes Excel files in **parallel** using `ThreadPoolExecutor` (8 workers) with `xlsxwriter` engine
 - Output folder structure: `output/<source_name>/<company_name>/<policy_no>/`
-- Returns `list[dict]` with `file_path`, `policy_no`, `company_name`, `source_name` for each file written
-- Policies in the CR snapshot with no matching claim rows are skipped (expected for zero-claim policies)
+- Returns `list[dict]` with `file_path`, `policy_no`, `company_name`, `source_name`,
+  `policy_effective_date`, `policy_renewal_date` for each file written
+- Policies in CR with no matching rows in the routed data source are skipped
 
 ---
 
 ## upload.py
 
 - Accepts a `credentials` object (OAuth); passes it to every Drive API call
-- `specific_files` parameter (list of dicts from `process_join`) limits upload to freshly written files only — avoids re-uploading the entire output folder on a filtered run
+- `specific_files` parameter (list of dicts from `process_join`) limits upload to freshly written files only
 - Uses `_get_or_create_folder()` with a local cache to avoid creating duplicate folders
-- **Parallel Upload**: `ThreadPoolExecutor` with 20 workers (Drive write quota is the real ceiling)
+- **Parallel Upload**: `ThreadPoolExecutor` with 20 workers
 - **Safe Overwrite**: if a file already exists in Drive, updates it via `fileId` instead of duplicating
-- Returns `dict[policy_no] → {file_id, web_view_link, file_path, company_name, source_name}`
+- Returns `dict[policy_no] → {file_id, web_view_link, file_path, company_name, source_name,
+  policy_effective_date, policy_renewal_date}` — date fields passed through to drafts.py
 - `webViewLink` is constructed manually as `https://drive.google.com/file/d/{file_id}/view`
 
 ---
 
 ## sheets.py
 
-- Reads columns `A:H` in a single API call — column A has data in every row, preventing the Sheets API from trimming leading empty rows and causing an off-by-one index shift
-- Matches rows by **column H** (policy_no); uses first occurrence only (duplicates are skipped)
-- Row 1 is always the header — skipped by row number, not by string match
-- Batch-updates **column D** (Drive `webViewLink`) and **column E** (`as_of` in `YYYY-MM` form) for matched rows
-- Returns `dict[policy_no] → {"to": [str], "cc": [str]}` built from columns F and G — passed directly to `drafts.py`
+Three functions, all operating on the **FINAL** tab:
+
+- `sync_new_policies(creds, sid, sheet)` — reads column E directly (all rows, ignoring
+  column C) to detect gaps; appends one row per new active policy with A/B/E/H/I populated.
+  Called once per run before `read_master()`.
+- `read_master(creds, sid, sheet)` — reads `A:K`; returns
+  `dict[policy_no] → {"to", "cc", "need_report", "row", "e_date"}`.
+  Only rows with non-blank column C and column E are included.
+- `write_links(creds, sid, sheet, upload_results, as_of, master)` — batch-writes
+  Drive link (col J) and as_of (col K) for each uploaded policy row.
+
+- Column A always has data → no row-trim shift in the Sheets API response.
+- Row 1 is the header — skipped by row number, not string match.
+- First occurrence of each policy_no is used; duplicates are ignored.
 
 **Column layout (load-bearing — sheet must not be reorganised):**
 
-| Column | Content |
-|---|---|
-| H | policy_no (match key) |
-| D | Drive link (written by pipeline) |
-| E | Latest As Of (written by pipeline) |
-| F | To addresses (read by pipeline for draft creation) |
-| G | Cc addresses (read by pipeline for draft creation) |
+| Column | Content | Written by |
+|---|---|---|
+| A | company_name | sync_new_policies |
+| B | source_name | sync_new_policies |
+| C | need_report (`detail` or `header`) | user |
+| E | policy_no (match key) | sync_new_policies |
+| F | To addresses | user |
+| G | Cc addresses | user |
+| H | s_date (policy effective date) | sync_new_policies |
+| I | e_date (policy renewal date) | sync_new_policies |
+| J | Drive link | write_links |
+| K | Latest As Of | write_links |
 
 ---
 
 ## drafts.py
 
-- Receives `recipient_map` (from `sheets.py`) and `upload_results` (from `upload.py`)
-- Groups policies by **unique `(To, Cc, source_name)` combination** — same recipients but different `source_name` always produce separate drafts
+- Receives `master` (from `sheets.read_master()`) and `upload_results` (from `upload.py`)
+- Groups policies by **unique `(To, Cc)` combination** — `source_name` no longer splits groups
 - Each draft has:
-  - **Subject:** `Laporan Klaim <period> - <company> (<source_name>)`
-  - **Body:** list of Drive links per policy
-  - **Attachments:** the `.xlsx` file for each policy in the group attached directly
+  - **Subject:** `Report Claim Insured - {bulan} {year} - {broker}` where broker = unique
+    source_name(s) in the group joined by ` / `
+  - **Body:** HTML email in Indonesian — fixed copy with as-of month, plus an HTML table of
+    `No | policy_no | company_name | policy_effective_date | policy_renewal_date`
+  - **Jolly HR paragraph** — included by default; **omitted** if broker name contains `andika`
+  - **Attachments:** the `.xlsx` file for each policy in the group
+- `{bulan}` = period month (e.g. Mei), `{bulan_lalu}` = previous month (e.g. April)
+- Drive links are **not** included in the email body
 - Skips policies with no To addresses in the master sheet (warns in output)
-- Uses `gmail.compose` scope — drafts sit in the sender's Gmail inbox, ready for manual review and send
+- Uses `gmail.compose` scope — drafts sit in the satria account's Gmail inbox, ready for review
 - Gmail's 25 MB per-message limit applies to total attachment size
 
 ---
@@ -175,13 +220,13 @@ Three data sources, all via the Metabase REST API. CR and dashboard are fetched
 ## Configuration
 
 ### `REPORT_PERIOD`
-Passed via `--period "Mei 2026"`. Defaults to the previous month when run via cron;
-defaults to the current month when run locally without `--period`.
+Passed via `--period "Mei 2026"`. Defaults to the previous month on every run.
 
 Controls:
 - The `As_Of` filter sent to CR card (`2026-05`)
 - The `claim_date` filter sent to the dashboard (`~2026-06-01`)
 - The `As_Of` filter sent to the active policy card (`2026-05-31`)
+- The lapse cutoff date (last day of period minus 3 months)
 - The report filename
 
 ### `.env` variables
@@ -192,17 +237,18 @@ Controls:
 | `METABASE_USER` | Yes | Login email |
 | `METABASE_PASSWORD` | Yes | Login password |
 | `METABASE_CR_CARD_ID` | Yes | Saved question ID for claim ratio |
-| `METABASE_QUERY_CARD_ID` | Yes | Dashboard ID for raw claim data |
-| `METABASE_BENEFIT_CARD_ID` | Optional | Dashboard ID for benefit-level data |
-| `METABASE_ACTIVE_POLICY_CARD_ID` | Optional | Saved question ID for active policy list |
+| `METABASE_QUERY_CARD_ID` | Yes | Dashboard ID for claim-level data (dash 48) |
+| `METABASE_BENEFIT_CARD_ID` | Yes | Dashboard ID for benefit-level data (dash 38) |
+| `METABASE_ACTIVE_POLICY_CARD_ID` | Yes | Card 732 — active policy list with source_name |
 | `GOOGLE_DRIVE_FOLDER_ID` | Yes | Target Google Drive folder ID for uploads |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | Yes | Filename of the OAuth 2.0 Desktop client JSON |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | Yes | Filename of the OAuth client JSON (e.g. `satria_yudha.json`) |
 | `MASTER_SPREADSHEET_ID` | Yes | Google Sheets spreadsheet ID (from the URL) |
-| `MASTER_SHEET_NAME` | Yes | Sheet tab name (e.g. `2026`) |
+| `MASTER_SHEET_NAME` | Yes | Sheet tab name — currently `FINAL` |
 | `GOOGLE_LOGIN_HINT` | Optional | Pre-fills the Google account chooser on first consent |
 
 ### Credential files
-- `client_secret_*.json` — OAuth 2.0 Desktop client secret. Download from Google Cloud Console. Set filename in `GOOGLE_OAUTH_CLIENT_SECRET`. **Never commit.**
+- `satria_yudha.json` — OAuth 2.0 web-type client secret for the satria account. **Never commit.**
+  Requires `http://localhost:8080/` registered as an Authorized redirect URI in Google Cloud Console.
 - `token.json` — Generated automatically after first browser consent. Contains the refresh token. **Never commit.**
 
 ---
@@ -214,10 +260,11 @@ Controls:
 pip install -r requirements.txt
 cp .env.example .env
 # fill in .env
-# place client_secret_*.json at project root
+# place satria_yudha.json at project root
+# register http://localhost:8080/ in Google Cloud Console for the satria client
 ```
 
-### Claim-level report (default)
+### Full run (previous month, all policies)
 ```bash
 python3 script/main.py
 ```
@@ -232,25 +279,25 @@ python3 script/main.py --period "Februari 2026"
 python3 script/main.py --policy "POL-12345,POL-98765"
 ```
 
-### Benefit-level report
-```bash
-python3 script/main.py --benefit
-```
+Routing (claim vs benefit detail) is per-policy, driven by column C of the FINAL
+master sheet. The `--benefit` flag has been removed.
 
 ---
 
 ## Key design decisions
 
 - **dtype=str on CSV read** — preserves leading zeros on ID fields (`nik`, `card_no`, `member_id`). Numeric columns are cast explicitly after load.
-- **Column-based file detection** — files are identified by distinctive column headers, not by filename, so renaming inputs doesn't break anything.
-- **Parallel fetch** — CR card and dashboard are fetched simultaneously with `ThreadPoolExecutor(max_workers=2)`, saving ~10–15 s of network wait.
-- **Parallel Excel writing** — 8 worker threads write Excel files concurrently; combined with the `xlsxwriter` C engine this cuts processing time roughly in half vs sequential openpyxl.
-- **Parallel Google Drive upload** — 20 worker threads upload files concurrently. Checks for existing files by name in the target folder and updates them instead of creating duplicates, keeping the folder clean.
-- **As_Of slug not name** — Metabase returns `name: "As Of"` (space) but `slug: "As_Of"` (underscore). Parameters are matched by `slug` to avoid this mismatch.
-- **Active policy filter is optional** — if `METABASE_ACTIVE_POLICY_CARD_ID` is unset, both the CR card and dashboard return all policies unfiltered.
-- **Skipped policies** — a policy in the CR snapshot with zero matching claim rows in the dashboard data is skipped.
-- **Sheets A:H read** — reading from column A (not F or H) prevents the Sheets API from trimming leading empty rows in the response, which would shift all row indices and write to the wrong cells.
-- **First-occurrence dedup** — if a policy_no appears in multiple sheet rows, only the first is used.
-- **Strip env vars** — all path-critical env vars (spreadsheet ID, sheet name, Drive folder ID, client secret filename) are `.strip()`-ed at read time to guard against trailing newlines in Gitea secrets.
-- **Gmail drafts, not auto-send** — the pipeline creates drafts (not sends) so each report run can be reviewed before delivery. Recipients come from master sheet columns F/G. Drafts are grouped by `(To, Cc, source_name)` so different data sources never get bundled into one email.
+- **Per-policy routing** — column C of the FINAL tab decides per policy: `detail` → dashboard 38 (Benefit sheet), `header` → dashboard 48 (Query_result sheet). Sheet is read before fetch so routing drives the API calls.
+- **Sheet sync before fetch** — card 732 is queried first to detect new active policies. New rows are appended to FINAL (cols A/B/E/H/I) so the user only needs to fill in C (routing) and F/G (recipients) before the next run picks them up.
+- **Date filter** — policies where `e_date` (col I) is more than 3 months before the last day of the report period are excluded automatically. Policies with no `e_date` are treated as eligible.
+- **Parallel fetch** — CR + both dashboards fetched simultaneously with `ThreadPoolExecutor(max_workers=3)`.
+- **Parallel Excel writing** — 8 worker threads write Excel files concurrently with the `xlsxwriter` C engine.
+- **Parallel Google Drive upload** — 20 worker threads upload concurrently. Existing files are updated via `fileId` instead of duplicated.
+- **As_Of slug not name** — Metabase returns `name: "As Of"` (space) but `slug: "As_Of"` (underscore). Parameters are matched by `slug`.
+- **Sheets A:K read** — reading from column A prevents the Sheets API from trimming leading empty rows, which would shift row indices and write to wrong cells.
+- **Column E dedup check in sync** — `sync_new_policies` reads column E directly (not `read_master`) so policies added in a previous sync but without a routing value yet are not duplicated.
+- **Conditional Jolly HR paragraph** — omitted from the email body when the broker name contains "andika". All other brokers receive the standard paragraph.
+- **Gmail drafts, not auto-send** — drafts sit in the satria account's inbox for review. Grouped by `(To, Cc)` — same recipients always bundled into one draft regardless of source_name.
+- **Fixed OAuth port 8080** — web-type clients require a predictable redirect URI. Port 8080 is used so only one URI needs registering in Google Cloud Console.
+- **Strip env vars** — all path-critical env vars are `.strip()`-ed at read time to guard against trailing newlines in Gitea secrets.
 - **PII / production** — data is patient insurance claims (PII). Pipeline runs on a self-hosted Gitea runner. Do not use GitHub-hosted Actions runners as data would transit Microsoft/GitHub infrastructure.

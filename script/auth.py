@@ -10,9 +10,19 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",
 ]
 
+# Fixed port so the redirect URI is predictable for web-type OAuth clients.
+# Register http://localhost:8080/ in the Cloud Console Authorized redirect URIs
+# for the satria_yudha.json client before running for the first time.
+_LOCAL_SERVER_PORT = 8080
+
 
 def get_credentials(client_secret_file: str, token_file: str) -> Credentials:
-    """Return valid OAuth2 credentials, running browser consent flow on first use."""
+    """Return valid OAuth2 credentials, running browser consent flow on first use.
+
+    Works with both 'installed' (Desktop) and 'web' type OAuth 2.0 client JSONs.
+    For web clients the redirect URI must be http://localhost:8080/ — register
+    that URI in Google Cloud Console → APIs & Services → Credentials.
+    """
     creds = None
 
     if os.path.exists(token_file):
@@ -25,7 +35,7 @@ def get_credentials(client_secret_file: str, token_file: str) -> Credentials:
             flow = InstalledAppFlow.from_client_secrets_file(client_secret_file, SCOPES)
             hint = os.environ.get("GOOGLE_LOGIN_HINT")
             creds = flow.run_local_server(
-                port=0,
+                port=_LOCAL_SERVER_PORT,
                 prompt="select_account",
                 login_hint=hint,
             )

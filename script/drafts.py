@@ -8,40 +8,123 @@ from googleapiclient.discovery import build
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
+INDONESIAN_MONTHS = [
+    "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+    "Juli", "Agustus", "September", "Oktober", "November", "Desember",
+]
 
-def create_drafts(credentials, recipient_map, upload_results, report_period):
-    """Create one Gmail draft per unique (recipient group + source_name) combination.
 
-    Policies sharing the same To+Cc+source_name are bundled into one draft with
-    all Excel files attached. Different source_names always get separate drafts
-    even when recipients are identical.
+def _month_tokens(report_period):
+    """Return (bulan, bulan_lalu, year) for the email template.
+
+    'Mei 2026' → ('Mei', 'April', '2026')
+    """
+    parts = report_period.strip().split()
+    bulan = parts[0]  # e.g. 'Mei'
+    year = parts[1]   # e.g. '2026'
+
+    # Find previous month name
+    idx = next(
+        (i for i, m in enumerate(INDONESIAN_MONTHS) if m.lower() == bulan.lower()),
+        None,
+    )
+    if idx is None:
+        bulan_lalu = ""
+    elif idx == 0:
+        bulan_lalu = INDONESIAN_MONTHS[11]  # Desember of previous year
+    else:
+        bulan_lalu = INDONESIAN_MONTHS[idx - 1]
+
+    return bulan, bulan_lalu, year
+
+
+def _build_html_body(bulan, bulan_lalu, year, broker, policies_sorted):
+    """Build the HTML email body with the policy table."""
+
+    # Build table rows
+    table_rows = ""
+    for i, (policy_no, info) in enumerate(policies_sorted, start=1):
+        table_rows += (
+            f"<tr>"
+            f"<td style='border:1px solid #ccc;padding:4px 8px;'>{i}</td>"
+            f"<td style='border:1px solid #ccc;padding:4px 8px;'>{policy_no}</td>"
+            f"<td style='border:1px solid #ccc;padding:4px 8px;'>{info.get('company_name','')}</td>"
+            f"<td style='border:1px solid #ccc;padding:4px 8px;'>{info.get('policy_effective_date','')}</td>"
+            f"<td style='border:1px solid #ccc;padding:4px 8px;'>{info.get('policy_renewal_date','')}</td>"
+            f"</tr>"
+        )
+
+    jolly_paragraph = "" if "andika" in broker.lower() else """<br>
+<p>Sekaligus kami sampaikan bahwa untuk periode laporan selanjutnya, report akan kami
+support melalui aplikasi Jolly HR yang dapat diakses secara real time.<br>
+Sehubungan dengan hal tersebut, kami mohon bantuan untuk dapat menginformasikan email
+PIC atau penanggung jawab yang akan diberikan akses terhadap laporan tersebut.</p>
+"""
+
+    html = f"""<html><body>
+<p>Dear Bapak/Ibu,</p>
+
+<p>Berikut kami kirimkan Report Claim Detail Insured - {bulan} {year} {broker}
+dengan as of {bulan_lalu} {year} dengan detail perusahaan berikut :</p>
+
+<table style='border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px;'>
+  <thead>
+    <tr style='background:#f2f2f2;'>
+      <th style='border:1px solid #ccc;padding:4px 8px;'>No</th>
+      <th style='border:1px solid #ccc;padding:4px 8px;'>Policy No</th>
+      <th style='border:1px solid #ccc;padding:4px 8px;'>Company Name</th>
+      <th style='border:1px solid #ccc;padding:4px 8px;'>Policy Effective Date</th>
+      <th style='border:1px solid #ccc;padding:4px 8px;'>Policy Renewal Date</th>
+    </tr>
+  </thead>
+  <tbody>
+    {table_rows}
+  </tbody>
+</table>
+{jolly_paragraph}
+<p>Demikian informasi yang dapat kami sampaikan.<br>
+Atas perhatian dan kerjasamanya yang baik kami ucapkan terima kasih.</p>
+</body></html>"""
+
+    return html
+
+
+def create_drafts(credentials, master, upload_results, report_period):
+    """Create one Gmail draft per unique (To, Cc) combination.
+
+    Policies sharing the same To+Cc are bundled into one draft regardless of
+    source_name (unlike the previous behaviour).  Each draft:
+      - Subject : Report Claim Insured - {bulan} {year} - {broker}
+      - Body    : HTML with fixed Indonesian copy + policy table
+      - Attached: one .xlsx per policy in the group
 
     Args:
-        credentials: OAuth2 credentials (must have gmail.compose scope).
-        recipient_map: dict[policy_no] → {"to": [str], "cc": [str]}
-        upload_results: dict[policy_no] → {file_path, web_view_link, company_name, source_name, ...}
-        report_period: human-readable period string e.g. "Mei 2026".
+        credentials:   OAuth2 credentials (must have gmail.compose scope).
+        master:        dict[policy_no] → {"to", "cc", "need_report", "row"}
+                       from sheets.read_master().
+        upload_results: dict[policy_no] → {file_path, web_view_link, company_name,
+                        source_name, policy_effective_date, policy_renewal_date, ...}
+        report_period: e.g. "Mei 2026"
 
     Returns:
         Number of drafts created.
     """
     service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
+    bulan, bulan_lalu, year = _month_tokens(report_period)
 
-    # Group by (to, cc, source_name)
+    # Group by (to, cc) — source_name no longer splits groups
     groups: dict[tuple, dict] = {}
     for policy_no, info in upload_results.items():
-        if policy_no not in recipient_map:
+        if policy_no not in master:
             continue
-        recipients = recipient_map[policy_no]
+        recipients = master[policy_no]
         to_key = tuple(sorted(recipients["to"]))
         cc_key = tuple(sorted(recipients["cc"]))
-        source_name = info.get("source_name", "")
-        key = (to_key, cc_key, source_name)
+        key = (to_key, cc_key)
         if key not in groups:
             groups[key] = {
                 "to": recipients["to"],
                 "cc": recipients["cc"],
-                "source_name": source_name,
                 "policies": [],
             }
         groups[key]["policies"].append((policy_no, info))
@@ -55,28 +138,21 @@ def create_drafts(credentials, recipient_map, upload_results, report_period):
             continue
 
         policies_sorted = sorted(group["policies"], key=lambda x: x[0])
-        companies = sorted({info["company_name"] for _, info in policies_sorted})
-        source_name = group["source_name"]
 
-        if len(companies) == 1:
-            subject = f"Laporan Klaim {report_period} - {companies[0]}"
-        else:
-            subject = f"Laporan Klaim {report_period}"
-        if source_name:
-            subject += f" ({source_name})"
+        # Broker = unique source_names in this group, alphabetically joined
+        source_names = sorted({info.get("source_name", "") for _, info in policies_sorted if info.get("source_name", "")})
+        broker = " / ".join(source_names) if source_names else ""
 
-        lines = [f"Yth. Tim terkait,\n\nBerikut laporan klaim untuk periode {report_period}:\n"]
-        for policy_no, info in policies_sorted:
-            lines.append(f"  - {info['company_name']} ({policy_no})\n    {info['web_view_link']}")
-        lines.append("\nSilakan menghubungi kami jika ada pertanyaan.\n\nSalam,")
-        body = "\n".join(lines)
+        subject = f"Report Claim Insured - {bulan} {year} - {broker}" if broker else f"Report Claim Insured - {bulan} {year}"
+
+        html_body = _build_html_body(bulan, bulan_lalu, year, broker, policies_sorted)
 
         msg = MIMEMultipart()
         msg["To"] = ", ".join(group["to"])
         if group["cc"]:
             msg["Cc"] = ", ".join(group["cc"])
         msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain", "utf-8"))
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
 
         for policy_no, info in policies_sorted:
             file_path = info.get("file_path", "")

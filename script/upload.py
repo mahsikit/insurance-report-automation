@@ -168,6 +168,8 @@ def upload_output(output_folder, drive_folder_id, credentials, specific_files=No
                     "file_path": file_path,
                     "company_name": (extra_meta or {}).get("company_name", ""),
                     "source_name": (extra_meta or {}).get("source_name", ""),
+                    "policy_effective_date": (extra_meta or {}).get("policy_effective_date", ""),
+                    "policy_renewal_date": (extra_meta or {}).get("policy_renewal_date", ""),
                 }
             else:
                 errors += 1
