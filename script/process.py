@@ -42,6 +42,17 @@ def _write_policy(policy, df_cr_filtered, df_data_filtered, output_folder, data_
 
     safe_company = re.sub(r'[\\/:*?"<>|]', '', company_name).strip()
 
+    # Validate approval_amount (CR) == sum(approved) (data sheet) BEFORE creating any file
+    if 'approval_amount' in df_cr_filtered.columns and 'approved' in df_data_filtered.columns:
+        cr_approval = pd.to_numeric(df_cr_filtered.iloc[0]['approval_amount'], errors='coerce')
+        data_sum = pd.to_numeric(df_data_filtered['approved'], errors='coerce').sum()
+        if pd.notna(cr_approval) and round(cr_approval) != round(data_sum):
+            raise ValueError(
+                f"approval_amount mismatch — "
+                f"CR={cr_approval:,.2f}  vs  sum(approved)={data_sum:,.2f}  "
+                f"(diff={data_sum - cr_approval:+,.2f})"
+            )
+
     policy_dir = os.path.join(output_folder, broker, safe_company, policy)
     os.makedirs(policy_dir, exist_ok=True)
 
