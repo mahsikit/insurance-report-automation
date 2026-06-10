@@ -1,10 +1,19 @@
 import base64
 import os
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 from googleapiclient.discovery import build
+
+
+def _sanitize_email(addr: str) -> str:
+    """Strip whitespace and control characters from an email address."""
+    addr = addr.strip()
+    # Remove any control/non-printable characters (including \r \n \t)
+    addr = re.sub(r"[\x00-\x1f\x7f]", "", addr)
+    return addr.strip()
 
 XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
@@ -147,10 +156,18 @@ def create_drafts(credentials, master, upload_results, report_period):
 
         html_body = _build_html_body(bulan, bulan_lalu, year, broker, policies_sorted)
 
+        to_clean = [_sanitize_email(e) for e in group["to"] if _sanitize_email(e)]
+        cc_clean = [_sanitize_email(e) for e in group["cc"] if _sanitize_email(e)]
+
+        if not to_clean:
+            skipped += len(group["policies"])
+            print(f"⚠️  Skipping draft '{subject}' — To addresses became empty after sanitization (raw: {group['to']})")
+            continue
+
         msg = MIMEMultipart()
-        msg["To"] = ", ".join(group["to"])
-        if group["cc"]:
-            msg["Cc"] = ", ".join(group["cc"])
+        msg["To"] = ", ".join(to_clean)
+        if cc_clean:
+            msg["Cc"] = ", ".join(cc_clean)
         msg["Subject"] = subject
         msg.attach(MIMEText(html_body, "html", "utf-8"))
 
@@ -170,13 +187,15 @@ def create_drafts(credentials, master, upload_results, report_period):
             msg.attach(part)
 
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-        service.users().drafts().create(
-            userId="me",
-            body={"message": {"raw": raw}},
-        ).execute()
-
-        draft_count += 1
-        print(f"📝 Draft: {subject}  →  To: {', '.join(group['to'])}")
+        try:
+            service.users().drafts().create(
+                userId="me",
+                body={"message": {"raw": raw}},
+            ).execute()
+            draft_count += 1
+            print(f"📝 Draft: {subject}  →  To: {', '.join(to_clean)}")
+        except Exception as exc:
+            print(f"❌ Failed to create draft '{subject}' (To: {to_clean}): {exc}")
 
     print(f"\n📬 {draft_count} draft(s) created in Gmail.")
     if skipped:
