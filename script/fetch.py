@@ -26,15 +26,11 @@ def _require_env(name):
 
 
 def _claim_before_date(report_period):
-    """'Mei 2026' → '~2026-06-01'  (Metabase 'before' filter = up to end of May)"""
+    """'Juni 2026' → '~2026-06-01'  (Metabase 'before' filter = up to end of May)"""
     parts = report_period.strip().split()
     month = INDONESIAN_MONTHS[parts[0].lower()]
     year = int(parts[1])
-    if month == 12:
-        next_year, next_month = year + 1, 1
-    else:
-        next_year, next_month = year, month + 1
-    return f"~{next_year:04d}-{next_month:02d}-01"
+    return f"~{year:04d}-{month:02d}-01"
 
 
 def _as_of_value(report_period):
