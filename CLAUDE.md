@@ -202,6 +202,8 @@ Three functions, all operating on the **FINAL** tab:
 
 - Receives `master` (from `sheets.read_master()`) and `upload_results` (from `upload.py`)
 - Groups policies by **unique `(To, Cc)` combination** — `source_name` no longer splits groups
+- Policies where **both To and Cc are blank** are never bundled together — each such policy
+  gets its own separate draft, since there's no way to know if they belong in the same email
 - Each draft has:
   - **Subject:** `Report Claim Insured - {bulan} {year} - {broker}` where broker = unique
     source_name(s) in the group joined by ` / `
@@ -211,7 +213,9 @@ Three functions, all operating on the **FINAL** tab:
   - **Attachments:** the `.xlsx` file for each policy in the group
 - `{bulan}` = period month (e.g. Mei), `{bulan_lalu}` = previous month (e.g. April)
 - Drive links are **not** included in the email body
-- Skips policies with no To addresses in the master sheet (warns in output)
+- Still creates a draft when To and/or Cc are blank in the master sheet — those
+  headers are simply left unset on the draft so the user can fill them in manually
+  before sending
 - Uses `gmail.compose` scope — drafts sit in the satria account's Gmail inbox, ready for review
 - Gmail's 25 MB per-message limit applies to total attachment size
 

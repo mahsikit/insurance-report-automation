@@ -107,6 +107,11 @@ def create_drafts(credentials, master, upload_results, report_period):
       - Body    : HTML with fixed Indonesian copy + policy table
       - Attached: one .xlsx per policy in the group
 
+    Policies with no To/Cc filled in on the master sheet still get a draft —
+    the To/Cc headers are simply left unset so the user can fill them in
+    manually before sending. Since we can't know whether such policies belong
+    together, each gets its own separate draft rather than being bundled.
+
     Args:
         credentials:   OAuth2 credentials (must have gmail.compose scope).
         master:        dict[policy_no] → {"to", "cc", "need_report", "row"}
@@ -121,7 +126,9 @@ def create_drafts(credentials, master, upload_results, report_period):
     service = build("gmail", "v1", credentials=credentials, cache_discovery=False)
     bulan, bulan_lalu, year = _month_tokens(report_period)
 
-    # Group by (to, cc) — source_name no longer splits groups
+    # Group by (to, cc) — source_name no longer splits groups.
+    # Policies with both To and Cc blank are NOT bundled together (we don't know
+    # if they actually belong in the same email) — each gets its own draft.
     groups: dict[tuple, dict] = {}
     for policy_no, info in upload_results.items():
         if policy_no not in master:
@@ -129,7 +136,7 @@ def create_drafts(credentials, master, upload_results, report_period):
         recipients = master[policy_no]
         to_key = tuple(sorted(recipients["to"]))
         cc_key = tuple(sorted(recipients["cc"]))
-        key = (to_key, cc_key)
+        key = (to_key, cc_key) if (to_key or cc_key) else (to_key, cc_key, policy_no)
         if key not in groups:
             groups[key] = {
                 "to": recipients["to"],
@@ -139,13 +146,8 @@ def create_drafts(credentials, master, upload_results, report_period):
         groups[key]["policies"].append((policy_no, info))
 
     draft_count = 0
-    skipped = 0
 
     for key, group in groups.items():
-        if not group["to"]:
-            skipped += len(group["policies"])
-            continue
-
         policies_sorted = sorted(group["policies"], key=lambda x: x[0])
 
         # Broker = unique source_names in this group, alphabetically joined
@@ -159,13 +161,9 @@ def create_drafts(credentials, master, upload_results, report_period):
         to_clean = [_sanitize_email(e) for e in group["to"] if _sanitize_email(e)]
         cc_clean = [_sanitize_email(e) for e in group["cc"] if _sanitize_email(e)]
 
-        if not to_clean:
-            skipped += len(group["policies"])
-            print(f"⚠️  Skipping draft '{subject}' — To addresses became empty after sanitization (raw: {group['to']})")
-            continue
-
         msg = MIMEMultipart()
-        msg["To"] = ", ".join(to_clean)
+        if to_clean:
+            msg["To"] = ", ".join(to_clean)
         if cc_clean:
             msg["Cc"] = ", ".join(cc_clean)
         msg["Subject"] = subject
@@ -193,12 +191,11 @@ def create_drafts(credentials, master, upload_results, report_period):
                 body={"message": {"raw": raw}},
             ).execute()
             draft_count += 1
-            print(f"📝 Draft: {subject}  →  To: {', '.join(to_clean)}")
+            to_display = ", ".join(to_clean) if to_clean else "(no To — fill in manually)"
+            print(f"📝 Draft: {subject}  →  To: {to_display}")
         except Exception as exc:
             print(f"❌ Failed to create draft '{subject}' (To: {to_clean}): {exc}")
 
     print(f"\n📬 {draft_count} draft(s) created in Gmail.")
-    if skipped:
-        print(f"⚠️  {skipped} policies skipped — no To recipients in master sheet.")
 
     return draft_count
