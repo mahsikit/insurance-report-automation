@@ -2,10 +2,16 @@ import re
 from googleapiclient.discovery import build
 
 
+# Placeholder values sometimes entered in the To/Cc columns to mean "no recipient
+# yet" — these must be treated as blank, not as a literal (invalid) email address.
+_BLANK_EMAIL_TOKENS = {"-", "n/a", "na", "tbd", "none", "nil", "null"}
+
+
 def _parse_emails(raw: str) -> list[str]:
     if not raw or not str(raw).strip():
         return []
-    return [e.strip() for e in re.split(r"[,;]+", str(raw).strip()) if e.strip()]
+    tokens = [e.strip() for e in re.split(r"[,;]+", str(raw).strip()) if e.strip()]
+    return [t for t in tokens if t.lower() not in _BLANK_EMAIL_TOKENS]
 
 
 def read_master(credentials, spreadsheet_id, sheet_name):

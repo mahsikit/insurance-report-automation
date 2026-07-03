@@ -23,6 +23,18 @@ def test_parse_emails(raw, expected):
     assert sheets._parse_emails(raw) == expected
 
 
+@pytest.mark.parametrize("raw", ["-", "N/A", "n/a", "TBD", "None", "  -  "])
+def test_parse_emails_treats_placeholder_tokens_as_blank(raw):
+    # Real-world bug: a literal "-" in the To/Cc column was treated as a real
+    # address, got grouped with unrelated policies, and Gmail rejected the
+    # whole draft with "Invalid To header".
+    assert sheets._parse_emails(raw) == []
+
+
+def test_parse_emails_filters_placeholder_token_out_of_a_mixed_list():
+    assert sheets._parse_emails("a@x.com, -") == ["a@x.com"]
+
+
 # ---------------------------------------------------------------------------
 # drafts._sanitize_email
 # ---------------------------------------------------------------------------
