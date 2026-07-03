@@ -65,9 +65,9 @@ main.py
 
 Workflow file: `.github/workflows/report_automation.yml`
 
-**Scheduled run:** every 5th of the month at 08:00 WIB (01:00 UTC).
+**Scheduled run:** every 1st of the month at 08:00 WIB (01:00 UTC).
 The period is auto-derived as the previous calendar month
-(e.g. workflow fires on June 5 → period = "Mei 2026").
+(e.g. workflow fires on June 1 → period = "Mei 2026").
 
 **Manual trigger (`workflow_dispatch`) inputs:**
 
