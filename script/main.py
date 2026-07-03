@@ -20,6 +20,45 @@ def get_default_period():
     return f"{months[now.month - 1]} {now.year}"
 
 
+def compute_lapse_cutoff(as_of_last_day: datetime.date) -> datetime.date:
+    """Last day of the report period minus 3 months (day clamped to the shorter month).
+
+    e.g. 2026-05-31 → 2026-02-28
+    """
+    cutoff_month = as_of_last_day.month - 3
+    cutoff_year = as_of_last_day.year
+    if cutoff_month <= 0:
+        cutoff_month += 12
+        cutoff_year -= 1
+    cutoff_last = calendar.monthrange(cutoff_year, cutoff_month)[1]
+    return datetime.date(cutoff_year, cutoff_month, min(as_of_last_day.day, cutoff_last))
+
+
+def _parse_edate(raw):
+    for fmt in ("%d %B %Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
+        try:
+            return datetime.datetime.strptime(raw.strip(), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def filter_eligible(master: dict, cutoff_date: datetime.date) -> tuple[dict, list]:
+    """Split master into (eligible, excluded_policy_nos) by lapse cutoff.
+
+    A policy is eligible if e_date is unparseable/blank, or e_date >= cutoff_date.
+    """
+    excluded = []
+    eligible = {}
+    for p, info in master.items():
+        ed = _parse_edate(info.get("e_date", ""))
+        if ed is None or ed >= cutoff_date:
+            eligible[p] = info
+        else:
+            excluded.append(p)
+    return eligible, excluded
+
+
 def _validate_env():
     required = {
         "GOOGLE_DRIVE_FOLDER_ID": os.environ.get("GOOGLE_DRIVE_FOLDER_ID"),
@@ -114,31 +153,8 @@ def main():
     # 2. DATE FILTER — active or lapsed ≤ 3 months
     # =========================
     as_of_last_day = datetime.date.fromisoformat(_as_of_last_day_value(args.period))
-    # Subtract 3 months from the last day of the report period
-    cutoff_month = as_of_last_day.month - 3
-    cutoff_year = as_of_last_day.year
-    if cutoff_month <= 0:
-        cutoff_month += 12
-        cutoff_year -= 1
-    cutoff_last = calendar.monthrange(cutoff_year, cutoff_month)[1]
-    cutoff_date = datetime.date(cutoff_year, cutoff_month, min(as_of_last_day.day, cutoff_last))
-
-    def _parse_edate(raw):
-        for fmt in ("%d %B %Y", "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y"):
-            try:
-                return datetime.datetime.strptime(raw.strip(), fmt).date()
-            except ValueError:
-                continue
-        return None
-
-    excluded_date = []
-    eligible = {}
-    for p, info in master.items():
-        ed = _parse_edate(info.get("e_date", ""))
-        if ed is None or ed >= cutoff_date:
-            eligible[p] = info
-        else:
-            excluded_date.append(p)
+    cutoff_date = compute_lapse_cutoff(as_of_last_day)
+    eligible, excluded_date = filter_eligible(master, cutoff_date)
 
     if excluded_date:
         print(f"   📅 Excluded (lapsed > 3 months): {len(excluded_date)} policies")

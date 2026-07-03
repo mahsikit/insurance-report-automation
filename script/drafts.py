@@ -98,6 +98,40 @@ Atas perhatian dan kerjasamanya yang baik kami ucapkan terima kasih.</p>
     return html
 
 
+def group_by_recipients(master: dict, upload_results: dict) -> dict:
+    """Group policies by unique (To, Cc) combination.
+
+    Policies sharing the same To+Cc are bundled into one group regardless of
+    source_name. Policies where both To and Cc are blank are NOT bundled
+    together (we don't know if they actually belong in the same email) — each
+    gets its own separate group, keyed by policy_no.
+
+    Args:
+        master:         dict[policy_no] → {"to", "cc", ...} from sheets.read_master().
+        upload_results: dict[policy_no] → {file_path, company_name, source_name, ...}.
+                        Policies not present in master are skipped.
+
+    Returns:
+        dict[key] → {"to": list[str], "cc": list[str], "policies": list[(policy_no, info)]}
+    """
+    groups: dict[tuple, dict] = {}
+    for policy_no, info in upload_results.items():
+        if policy_no not in master:
+            continue
+        recipients = master[policy_no]
+        to_key = tuple(sorted(recipients["to"]))
+        cc_key = tuple(sorted(recipients["cc"]))
+        key = (to_key, cc_key) if (to_key or cc_key) else (to_key, cc_key, policy_no)
+        if key not in groups:
+            groups[key] = {
+                "to": recipients["to"],
+                "cc": recipients["cc"],
+                "policies": [],
+            }
+        groups[key]["policies"].append((policy_no, info))
+    return groups
+
+
 def create_drafts(credentials, master, upload_results, report_period):
     """Create one Gmail draft per unique (To, Cc) combination.
 
@@ -129,21 +163,7 @@ def create_drafts(credentials, master, upload_results, report_period):
     # Group by (to, cc) — source_name no longer splits groups.
     # Policies with both To and Cc blank are NOT bundled together (we don't know
     # if they actually belong in the same email) — each gets its own draft.
-    groups: dict[tuple, dict] = {}
-    for policy_no, info in upload_results.items():
-        if policy_no not in master:
-            continue
-        recipients = master[policy_no]
-        to_key = tuple(sorted(recipients["to"]))
-        cc_key = tuple(sorted(recipients["cc"]))
-        key = (to_key, cc_key) if (to_key or cc_key) else (to_key, cc_key, policy_no)
-        if key not in groups:
-            groups[key] = {
-                "to": recipients["to"],
-                "cc": recipients["cc"],
-                "policies": [],
-            }
-        groups[key]["policies"].append((policy_no, info))
+    groups = group_by_recipients(master, upload_results)
 
     draft_count = 0
 
